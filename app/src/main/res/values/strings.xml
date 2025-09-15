@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">SavioAppAPI</string>
+    <string name="status_authenticating">Autenticando…</string>
+    <string name="status_get_profile">Obteniendo perfil…</string>
+    <string name="status_ready">Listo</string>
+    <string name="status_error">Error: %1$s</string>
+    <string name="status_error_profile">Error perfil: %1$s</string>
+    <string name="logout">Cerrar sesión</string>
+</resources>

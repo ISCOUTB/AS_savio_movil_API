@@ -1,0 +1,16 @@
+{
+  "client_id": "REEMPLAZAR_CLIENT_ID",
+  "redirect_uri": "msalREEMPLAZAR_CLIENT_ID://auth",
+  "account_mode": "SINGLE",
+  "authorities": [
+    {
+      "type": "AAD",
+      "audience": {
+        "type": "AzureADMyOrg",
+        "tenant_id": "REEMPLAZAR_TENANT_ID"
+      }
+    }
+  ],
+  "broker_redirect_uri_registered": false
+}
+
