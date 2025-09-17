@@ -8,6 +8,7 @@ import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -16,6 +17,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var txtStatus: TextView
     private lateinit var progress: ProgressBar
+    private lateinit var overlay: LinearLayout
 
     private var intentando = false
     private var listo = false
@@ -32,11 +34,11 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
         txtStatus = findViewById(R.id.txtStatus)
         progress = findViewById(R.id.progress)
+        overlay = findViewById(R.id.overlay)
 
-        // Ocultar WebView al inicio, solo mostrarlo si es necesario
+        // Mostrar overlay de carga al inicio
+        overlay.visibility = LinearLayout.VISIBLE
         webView.visibility = WebView.INVISIBLE
-        txtStatus.visibility = TextView.VISIBLE
-        progress.visibility = ProgressBar.VISIBLE
 
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
@@ -57,16 +59,12 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                progress.visibility = ProgressBar.VISIBLE
-                txtStatus.visibility = TextView.VISIBLE
-                // Mostrar WebView solo si no está listo
-                if (!listo) {
-                    webView.visibility = WebView.VISIBLE
-                    txtStatus.text = "Cargando..."
-                }
+                overlay.visibility = LinearLayout.VISIBLE
+                txtStatus.text = "Cargando portal..."
             }
             override fun onPageFinished(view: WebView?, url: String?) {
-                progress.visibility = ProgressBar.GONE
+                overlay.visibility = LinearLayout.VISIBLE
+                txtStatus.text = "Validando sesión..."
                 if (!listo) verificarSesion()
             }
         }
@@ -82,17 +80,19 @@ class MainActivity : AppCompatActivity() {
             if (res?.contains("OK") == true) {
                 listo = true
                 UserSession.accessToken = "webview-session"
-                // Ocultar WebView y mostrar pantalla de carga antes de abrir el menú
-                webView.visibility = WebView.INVISIBLE
-                txtStatus.visibility = TextView.VISIBLE
+                overlay.visibility = LinearLayout.VISIBLE
+                txtStatus.text = "¡Sesión iniciada! Entrando..."
                 progress.visibility = ProgressBar.VISIBLE
-                txtStatus.text = "Iniciando sesión..."
                 abrirMenuDirecto()
             } else if (intentos < MAX_INTENTOS) {
                 txtStatus.text = "Verificando sesión ($intentos/$MAX_INTENTOS)..."
+                progress.visibility = ProgressBar.VISIBLE
+                overlay.visibility = LinearLayout.VISIBLE
                 webView.postDelayed({ verificarSesion() }, 900)
             } else {
-                txtStatus.text = "Inicia sesión y espera..."
+                txtStatus.text = "Por favor inicia sesión en el portal y espera..."
+                progress.visibility = ProgressBar.VISIBLE
+                overlay.visibility = LinearLayout.VISIBLE
                 intentos = MAX_INTENTOS - 2
                 webView.postDelayed({ verificarSesion() }, 3000)
             }
@@ -100,6 +100,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun abrirMenuDirecto() {
+        // Oculta overlay antes de abrir el menú
+        overlay.visibility = LinearLayout.GONE
+        webView.visibility = WebView.INVISIBLE
         startActivity(Intent(this, MenuActivity::class.java))
         overridePendingTransition(0,0)
         finish()
