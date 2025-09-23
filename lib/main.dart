@@ -1,122 +1,398 @@
 import 'package:flutter/material.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'package:flutter/services.dart';
 
-void main() {
-  runApp(const MyApp());
+const MethodChannel sessionChannel = MethodChannel('app/session');
+
+Future<void> clearCookiesNative() async {
+  try {
+    await sessionChannel.invokeMethod('clearCookies');
+  } catch (_) {}
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+void main() {
+  runApp(const SavioApp());
+}
 
-  // This widget is the root of your application.
+class SavioApp extends StatelessWidget {
+  const SavioApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo),
+      home: const LoginWebViewPage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
+class UserSession {
+  static String? accessToken;
+  static void clear() => accessToken = null;
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class LoginWebViewPage extends StatefulWidget {
+  const LoginWebViewPage({super.key});
 
-  void _incrementCounter() {
+  @override
+  State<LoginWebViewPage> createState() => _LoginWebViewPageState();
+}
+
+class _LoginWebViewPageState extends State<LoginWebViewPage> {
+  final String startUrl = 'https://savio.utb.edu.co/';
+  late final WebViewController _controller;
+  bool _ready = false; // sesión lista
+  bool _transitioning = false; // tapar WebView al pasar al menú
+  bool _blockNav = false; // bloquear navegación post-login
+  bool _checking = false;
+  int _attempts = 0;
+  static const int maxAttempts = 12;
+  bool _coverSavio = true; // cubrir el WebView cuando es Savio
+  bool _forcedMicrosoft = false; // ya intentamos forzar el login MS
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0xFFFFFFFF))
+      ..setUserAgent(
+        'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 SavioApp/1.0',
+      )
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageStarted: (url) {
+            setState(() {
+              _ready = false;
+              _coverSavio = !_isMicrosoftUrl(url);
+            });
+            // Forzar que window.open navegue en el mismo WebView (evitar pestañas nuevas)
+            _controller.runJavaScript(
+              "window.open = function(u){ try{ location.href = u; }catch(e){ } }",
+            );
+            _maybeForceMicrosoft(url);
+          },
+          onPageFinished: (url) {
+            if (!_checking) _verifySession();
+            _maybeForceMicrosoft(url);
+          },
+          onUrlChange: (change) {
+            final url = change.url ?? '';
+            if (url.isNotEmpty) {
+              final cover = !_isMicrosoftUrl(url);
+              if (cover != _coverSavio) {
+                setState(() => _coverSavio = cover);
+              }
+            }
+          },
+          onWebResourceError: (error) {
+            // print('Web error: ${error.errorCode} ${error.description}');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error de carga: ${error.errorCode}')),
+            );
+          },
+          onNavigationRequest: (request) {
+            if (_blockNav) return NavigationDecision.prevent;
+            return NavigationDecision.navigate;
+          },
+        ),
+      )
+      ..loadRequest(Uri.parse(startUrl));
+
+    // Intento de limpieza de sesión por JS (opcional)
+    // Nota: para una limpieza real de cookies fuera del contexto de la página
+    // se requiere un plugin específico o reiniciar la app.
+  }
+
+  bool _isMicrosoftUrl(String? url) {
+    if (url == null) return false;
+    final u = url.toLowerCase();
+    return u.contains('login.microsoftonline.com') ||
+        u.contains('login.microsoft.com') ||
+        u.contains('microsoft.com');
+  }
+
+  Future<void> _maybeForceMicrosoft(String? url) async {
+    if (url == null) return;
+    if (_isMicrosoftUrl(url)) {
+      if (_coverSavio) setState(() => _coverSavio = false);
+      return; // ya estamos en MS
+    }
+    // En Savio: intentar abrir proveedor Microsoft sin mostrar la página
+    if (!_forcedMicrosoft && url.contains('savio.utb.edu.co')) {
+      _forcedMicrosoft = true;
+      try {
+        const jsClickMicrosoft = r"""
+          (function(){
+            try{
+              function clickIf(el){ if(!el) return false; el.click(); return true; }
+              // Intentos directos por atributos
+              var q = [
+                "a[href*='login.microsoft']",
+                "a[href*='microsoftonline']",
+                "a[href*='oauth2']",
+                "a[href*='saml']",
+                "button[data-provider*='microsoft']",
+                "[title*='Microsoft']"
+              ];
+              for (var i=0;i<q.length;i++){
+                try{
+                  var el = document.querySelector(q[i]);
+                  if (el && clickIf(el)) return 'OPENED';
+                }catch(_){/* selector inválido: continuar */}
+              }
+              // Búsqueda por texto visible
+              var nodes = document.querySelectorAll('a,button,div,span');
+              for (var j=0;j<nodes.length;j++){
+                var n = nodes[j];
+                var t = (n.textContent||'').toLowerCase();
+                var h = (n.getAttribute && n.getAttribute('href')) ? n.getAttribute('href').toLowerCase() : '';
+                if (t.includes('microsoft') || h.includes('microsoft')){
+                  if (clickIf(n)) return 'OPENED';
+                }
+              }
+              return 'NO';
+            }catch(e){return 'NO';}
+          })();
+        """;
+        final res = await _controller
+            .runJavaScriptReturningResult(jsClickMicrosoft)
+            .timeout(const Duration(seconds: 3));
+        final opened = ('$res').contains('OPENED');
+        if (!opened) {
+          // Fallback: intentar ir a una ruta de login conocida
+          try {
+            final uri = Uri.parse(url);
+            final base = '${uri.scheme}://${uri.host}';
+            await _controller.loadRequest(Uri.parse('$base/login/index.php'));
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _verifySession() async {
+    if (_checking || _ready) return;
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _checking = true; // mostrar overlay de verificación
     });
+    _attempts++;
+    const js = """
+      (function(){
+        try{
+          var u=document.querySelector('.userbutton .usertext');
+          if(u&&u.textContent.trim().length>0){return 'OK';}
+          var mailBtn=document.querySelector('.theme-loginform button.login-open');
+          if(mailBtn&&/@/.test(mailBtn.textContent)) return 'OK';
+          return 'NO';
+        }catch(e){return 'NO';}
+      })();
+    """;
+    Object? res;
+    try {
+      res = await _controller
+          .runJavaScriptReturningResult(js)
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      res = null; // tratar como NO
+    }
+    final ok = '$res'.contains('OK');
+    if (ok) {
+      setState(() {
+        _ready = true;
+        _transitioning = true; // ocultar cualquier contenido intermedio
+        _blockNav = true; // impedir que el WebView siga navegando
+      });
+      try {
+        await _controller.loadRequest(Uri.parse('about:blank'));
+      } catch (_) {}
+      UserSession.accessToken = 'webview-session';
+      if (!mounted) return;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (!mounted) return;
+      Navigator.of(
+        context,
+      ).pushReplacement(MaterialPageRoute(builder: (_) => const MenuPage()));
+    } else if (_attempts < maxAttempts) {
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      if (mounted) {
+        setState(() {
+          _checking = false;
+        });
+      }
+      if (mounted) _verifySession();
+    } else {
+      // Si no se pudo verificar, simplemente deja el login visible (sin overlays ni botones extra)
+      if (mounted) {
+        setState(() {
+          _checking = false;
+          _coverSavio = false;
+        });
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+        title: const Text('Iniciar sesión'),
+        actions: [
+          IconButton(
+            tooltip: 'Recargar',
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              _controller.reload();
+            },
+          ),
+        ],
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: Stack(
+        children: [
+          WebViewWidget(controller: _controller),
+          if (_transitioning || _checking || _coverSavio)
+            Container(
+              color: Colors.white,
+              child: const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 12),
+                  ],
+                ),
+              ),
+            ),
+          if (_transitioning || _checking || _coverSavio)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Center(
+                  child: Text(
+                    _transitioning
+                        ? 'Iniciando sesión...'
+                        : (_coverSavio
+                              ? 'Redirigiendo a Microsoft...'
+                              : 'Verificando sesión...'),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+      floatingActionButton: null,
+    );
+  }
+}
+
+class MenuPage extends StatelessWidget {
+  const MenuPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Menú'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.person),
+            onPressed: () => _showProfile(context),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+          children: [
+            _MenuCard(
+              icon: Icons.calendar_today,
+              title: 'Calendario inteligente',
+              onTap: () =>
+                  _toast(context, 'Abrir Calendario inteligente (pendiente)'),
+            ),
+            _MenuCard(
+              icon: Icons.sticky_note_2,
+              title: 'Apuntes rápidos',
+              onTap: () => _toast(
+                context,
+                'Abrir Gestor de apuntes rápidos (pendiente)',
+              ),
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+    );
+  }
+
+  void _toast(BuildContext context, String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  void _showProfile(BuildContext context) async {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Sesión Microsoft activa',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 12),
+                ElevatedButton(
+                  onPressed: () async {
+                    await clearCookiesNative();
+                    UserSession.clear();
+                    if (context.mounted) {
+                      Navigator.of(context).pop();
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute(
+                          builder: (_) => const LoginWebViewPage(),
+                        ),
+                        (route) => false,
+                      );
+                    }
+                  },
+                  child: const Text('Cerrar sesión'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _MenuCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final VoidCallback onTap;
+
+  const _MenuCard({
+    required this.icon,
+    required this.title,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: ListTile(
+        leading: Icon(icon, size: 28),
+        title: Text(title),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: onTap,
+      ),
     );
   }
 }
