@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:flutter/services.dart';
+import 'mostrar_token_screen.dart';
 
 const MethodChannel sessionChannel = MethodChannel('app/session');
 
@@ -29,7 +30,11 @@ class SavioApp extends StatelessWidget {
 
 class UserSession {
   static String? accessToken;
-  static void clear() => accessToken = null;
+  static String? moodleCookie;
+  static void clear() {
+    accessToken = null;
+    moodleCookie = null;
+  }
 }
 
 class LoginWebViewPage extends StatefulWidget {
@@ -199,6 +204,21 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
     }
     final ok = '$res'.contains('OK');
     if (ok) {
+      // Obtener cookies de sesión de Moodle desde el WebView
+      String? cookie;
+      try {
+        final jsCookie = "document.cookie";
+        final cookies = await _controller.runJavaScriptReturningResult(jsCookie);
+        if (cookies is String) {
+          // Buscar la cookie de sesión de Moodle (ej: MoodleSession...)
+          final reg = RegExp(r'(MoodleSession[^=]*)=([^;]*)');
+          final match = reg.firstMatch(cookies);
+          if (match != null) {
+            cookie = '${match.group(1)}=${match.group(2)}';
+          }
+        }
+      } catch (_) {}
+      UserSession.moodleCookie = cookie;
       setState(() {
         _ready = true;
         _transitioning = true; // ocultar cualquier contenido intermedio
@@ -321,6 +341,17 @@ class MenuPage extends StatelessWidget {
                 context,
                 'Abrir Gestor de apuntes rápidos (pendiente)',
               ),
+            ),
+            _MenuCard(
+              icon: Icons.vpn_key,
+              title: 'Mostrar token',
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => MostrarTokenScreen(cookie: UserSession.moodleCookie),
+                  ),
+                );
+              },
             ),
           ],
         ),
