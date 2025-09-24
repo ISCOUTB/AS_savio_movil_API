@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:flutter/services.dart';
 import 'mostrar_token_screen.dart';
+import 'savio_webview_page.dart';
+import 'calcu_nota_webview_page.dart';
 
 const MethodChannel sessionChannel = MethodChannel('app/session');
 
@@ -274,33 +276,33 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
           if (_transitioning || _checking || _coverSavio)
             Container(
               color: Colors.white,
-              child: const Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircularProgressIndicator(),
-                    SizedBox(height: 12),
-                  ],
-                ),
-              ),
-            ),
-          if (_transitioning || _checking || _coverSavio)
-            Positioned.fill(
-              child: IgnorePointer(
                 child: Center(
-                  child: Text(
-                    _transitioning
-                        ? 'Iniciando sesión...'
-                        : (_coverSavio
-                              ? 'Redirigiendo a Microsoft...'
-                              : 'Verificando sesión...'),
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Image.asset(
+                        'assets/savioof.png',
+                        width: 200,
+                        height: 200,
+                        fit: BoxFit.contain,
+                      ),
+                      const SizedBox(height: 36),
+                      Text(
+                        _transitioning
+                            ? 'Iniciando sesión...'
+                            : (_coverSavio
+                                  ? 'Cargando aplicación...'
+                                  : 'Verificando sesión...'),
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
                   ),
                 ),
-              ),
             ),
         ],
       ),
@@ -314,9 +316,87 @@ class MenuPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+
+
+    final menuItems = [
+      _MenuGridItem(
+        color: Colors.deepPurple.shade200,
+        icon: Icons.school,
+        iconColor: Colors.white,
+        title: 'SAVIO/Moodle',
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const SavioWebViewPage(),
+            ),
+          );
+        },
+      ),
+      _MenuGridItem(
+        color: Colors.deepPurple.shade100,
+        icon: Icons.event_available,
+        iconColor: Colors.deepPurple,
+        title: 'Calendario inteligente',
+        onTap: () => _toast(context, 'Abrir Calendario inteligente (pendiente)'),
+      ),
+      _MenuGridItem(
+        color: Colors.teal.shade100,
+        icon: Icons.vpn_key,
+        iconColor: Colors.teal.shade700,
+        title: 'Mostrar token',
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => MostrarTokenScreen(cookie: UserSession.moodleCookie),
+            ),
+          );
+        },
+      ),
+      _MenuGridItem(
+        color: Colors.pink.shade100,
+        icon: Icons.calculate,
+        iconColor: Colors.pink.shade700,
+        title: 'CalcuNota',
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const CalcuNotaWebViewPage(),
+            ),
+          );
+        },
+      ),
+    ];
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Menú'),
+        title: Row(
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.08),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.all(4),
+              child: ClipOval(
+                child: Image.asset(
+                  'assets/images.png',
+                  height: 32,
+                  width: 32,
+                  fit: BoxFit.cover,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Text('Menú'),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.person),
@@ -324,40 +404,124 @@ class MenuPage extends StatelessWidget {
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            _MenuCard(
-              icon: Icons.calendar_today,
-              title: 'Calendario inteligente',
-              onTap: () =>
-                  _toast(context, 'Abrir Calendario inteligente (pendiente)'),
-            ),
-            _MenuCard(
-              icon: Icons.sticky_note_2,
-              title: 'Apuntes rápidos',
-              onTap: () => _toast(
-                context,
-                'Abrir Gestor de apuntes rápidos (pendiente)',
+      body: Container(
+        color: Colors.grey[50],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // Ajustar el aspect ratio según el alto disponible
+            final isSmall = constraints.maxHeight < 650;
+            return SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                child: GridView.count(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 16,
+                  crossAxisSpacing: 16,
+                  childAspectRatio: isSmall ? 0.95 : 0.98,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: menuItems,
+                ),
               ),
-            ),
-            _MenuCard(
-              icon: Icons.vpn_key,
-              title: 'Mostrar token',
-              onTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => MostrarTokenScreen(cookie: UserSession.moodleCookie),
-                  ),
-                );
-              },
-            ),
-          ],
+            );
+          },
+        ),
+      ),
+        floatingActionButton: null,
+      );
+    }
+  }
+  
+class _MenuGridItem extends StatelessWidget {
+  final Color color;
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final VoidCallback onTap;
+
+  const _MenuGridItem({
+    required this.color,
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isSavio = title.trim().toLowerCase().contains('savio');
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(22),
+        onTap: onTap,
+        child: Container(
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(22),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 8,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              isSavio
+                  ? Container(
+                      decoration: BoxDecoration(
+                        color: Colors.deepPurple,
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.08),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      padding: const EdgeInsets.all(18),
+                      child: Icon(Icons.school, size: 40, color: Colors.white),
+                    )
+                  : Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.06),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      padding: const EdgeInsets.all(14),
+                      child: Icon(icon, size: 36, color: iconColor),
+                    ),
+              const SizedBox(height: 12),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
+}
 
   void _toast(BuildContext context, String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -366,64 +530,81 @@ class MenuPage extends StatelessWidget {
   void _showProfile(BuildContext context) async {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Sesión Microsoft activa',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 12),
-                ElevatedButton(
-                  onPressed: () async {
-                    await clearCookiesNative();
-                    UserSession.clear();
-                    if (context.mounted) {
-                      Navigator.of(context).pop();
-                      Navigator.of(context).pushAndRemoveUntil(
-                        MaterialPageRoute(
-                          builder: (_) => const LoginWebViewPage(),
-                        ),
-                        (route) => false,
-                      );
-                    }
-                  },
-                  child: const Text('Cerrar sesión'),
-                ),
-              ],
-            ),
-          ),
+        return DraggableScrollableSheet(
+          initialChildSize: 0.32,
+          minChildSize: 0.2,
+          maxChildSize: 0.5,
+          expand: false,
+          builder: (context, scrollController) {
+            return Container(
+              width: double.infinity,
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black12,
+                    blurRadius: 16,
+                    offset: Offset(0, -4),
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+              child: ListView(
+                controller: scrollController,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 48,
+                      height: 5,
+                      margin: const EdgeInsets.only(bottom: 18),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[300],
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                  ),
+                  const Text(
+                    'Sesión Microsoft activa',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 18),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.deepPurple,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size.fromHeight(48),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    icon: const Icon(Icons.logout),
+                    label: const Text('Cerrar sesión', style: TextStyle(fontSize: 16)),
+                    onPressed: () async {
+                      await clearCookiesNative();
+                      UserSession.clear();
+                      if (context.mounted) {
+                        Navigator.of(context).pop();
+                        Navigator.of(context).pushAndRemoveUntil(
+                          MaterialPageRoute(
+                            builder: (_) => const LoginWebViewPage(),
+                          ),
+                          (route) => false,
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
+            );
+          },
         );
       },
     );
   }
-}
 
-class _MenuCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final VoidCallback onTap;
 
-  const _MenuCard({
-    required this.icon,
-    required this.title,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: ListTile(
-        leading: Icon(icon, size: 28),
-        title: Text(title),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: onTap,
-      ),
-    );
-  }
-}
