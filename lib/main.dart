@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:flutter/services.dart';
-import 'mostrar_token_screen.dart';
-import 'savio_webview_page.dart';
-import 'calcu_nota_webview_page.dart';
+import 'screens/mostrar_token_screen.dart';
+import 'screens/savio_webview_page.dart';
+import 'screens/calcu_nota_webview_page.dart';
+import 'screens/calendar_screen.dart';
 
 const MethodChannel sessionChannel = MethodChannel('app/session');
 
@@ -210,7 +211,9 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
       String? cookie;
       try {
         final jsCookie = "document.cookie";
-        final cookies = await _controller.runJavaScriptReturningResult(jsCookie);
+        final cookies = await _controller.runJavaScriptReturningResult(
+          jsCookie,
+        );
         if (cookies is String) {
           // Buscar la cookie de sesión de Moodle (ej: MoodleSession...)
           final reg = RegExp(r'(MoodleSession[^=]*)=([^;]*)');
@@ -276,33 +279,33 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
           if (_transitioning || _checking || _coverSavio)
             Container(
               color: Colors.white,
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Image.asset(
-                        'assets/savioof.png',
-                        width: 200,
-                        height: 200,
-                        fit: BoxFit.contain,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Image.asset(
+                      'assets/savioof.png',
+                      width: 200,
+                      height: 200,
+                      fit: BoxFit.contain,
+                    ),
+                    const SizedBox(height: 36),
+                    Text(
+                      _transitioning
+                          ? 'Iniciando sesión...'
+                          : (_coverSavio
+                                ? 'Cargando aplicación...'
+                                : 'Verificando sesión...'),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black,
                       ),
-                      const SizedBox(height: 36),
-                      Text(
-                        _transitioning
-                            ? 'Iniciando sesión...'
-                            : (_coverSavio
-                                  ? 'Cargando aplicación...'
-                                  : 'Verificando sesión...'),
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.black,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
                 ),
+              ),
             ),
         ],
       ),
@@ -316,8 +319,6 @@ class MenuPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-
-
     final menuItems = [
       _MenuGridItem(
         color: Colors.deepPurple.shade200,
@@ -325,11 +326,9 @@ class MenuPage extends StatelessWidget {
         iconColor: Colors.white,
         title: 'SAVIO/Moodle',
         onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => const SavioWebViewPage(),
-            ),
-          );
+          Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const SavioWebViewPage()));
         },
       ),
       _MenuGridItem(
@@ -337,7 +336,11 @@ class MenuPage extends StatelessWidget {
         icon: Icons.event_available,
         iconColor: Colors.deepPurple,
         title: 'Calendario inteligente',
-        onTap: () => _toast(context, 'Abrir Calendario inteligente (pendiente)'),
+        onTap: () {
+          Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const CalendarScreen()));
+        },
       ),
       _MenuGridItem(
         color: Colors.teal.shade100,
@@ -347,7 +350,8 @@ class MenuPage extends StatelessWidget {
         onTap: () {
           Navigator.of(context).push(
             MaterialPageRoute(
-              builder: (_) => MostrarTokenScreen(cookie: UserSession.moodleCookie),
+              builder: (_) =>
+                  MostrarTokenScreen(cookie: UserSession.moodleCookie),
             ),
           );
         },
@@ -359,9 +363,7 @@ class MenuPage extends StatelessWidget {
         title: 'CalcuNota',
         onTap: () {
           Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => const CalcuNotaWebViewPage(),
-            ),
+            MaterialPageRoute(builder: (_) => const CalcuNotaWebViewPage()),
           );
         },
       ),
@@ -412,7 +414,10 @@ class MenuPage extends StatelessWidget {
             final isSmall = constraints.maxHeight < 650;
             return SingleChildScrollView(
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 12,
+                ),
                 child: GridView.count(
                   crossAxisCount: 2,
                   mainAxisSpacing: 16,
@@ -427,11 +432,11 @@ class MenuPage extends StatelessWidget {
           },
         ),
       ),
-        floatingActionButton: null,
-      );
-    }
+      floatingActionButton: null,
+    );
   }
-  
+}
+
 class _MenuGridItem extends StatelessWidget {
   final Color color;
   final IconData icon;
@@ -523,88 +528,89 @@ class _MenuGridItem extends StatelessWidget {
   }
 }
 
-  void _toast(BuildContext context, String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
+void _toast(BuildContext context, String msg) {
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+}
 
-  void _showProfile(BuildContext context) async {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        return DraggableScrollableSheet(
-          initialChildSize: 0.32,
-          minChildSize: 0.2,
-          maxChildSize: 0.5,
-          expand: false,
-          builder: (context, scrollController) {
-            return Container(
-              width: double.infinity,
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black12,
-                    blurRadius: 16,
-                    offset: Offset(0, -4),
-                  ),
-                ],
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
-              child: ListView(
-                controller: scrollController,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 48,
-                      height: 5,
-                      margin: const EdgeInsets.only(bottom: 18),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[300],
-                        borderRadius: BorderRadius.circular(4),
-                      ),
+void _showProfile(BuildContext context) async {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (ctx) {
+      return DraggableScrollableSheet(
+        initialChildSize: 0.32,
+        minChildSize: 0.2,
+        maxChildSize: 0.5,
+        expand: false,
+        builder: (context, scrollController) {
+          return Container(
+            width: double.infinity,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black12,
+                  blurRadius: 16,
+                  offset: Offset(0, -4),
+                ),
+              ],
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+            child: ListView(
+              controller: scrollController,
+              children: [
+                Center(
+                  child: Container(
+                    width: 48,
+                    height: 5,
+                    margin: const EdgeInsets.only(bottom: 18),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(4),
                     ),
                   ),
-                  const Text(
-                    'Sesión Microsoft activa',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 18),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.deepPurple,
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size.fromHeight(48),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                ),
+                const Text(
+                  'Sesión Microsoft activa',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 18),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.deepPurple,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size.fromHeight(48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    icon: const Icon(Icons.logout),
-                    label: const Text('Cerrar sesión', style: TextStyle(fontSize: 16)),
-                    onPressed: () async {
-                      await clearCookiesNative();
-                      UserSession.clear();
-                      if (context.mounted) {
-                        Navigator.of(context).pop();
-                        Navigator.of(context).pushAndRemoveUntil(
-                          MaterialPageRoute(
-                            builder: (_) => const LoginWebViewPage(),
-                          ),
-                          (route) => false,
-                        );
-                      }
-                    },
                   ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-
+                  icon: const Icon(Icons.logout),
+                  label: const Text(
+                    'Cerrar sesión',
+                    style: TextStyle(fontSize: 16),
+                  ),
+                  onPressed: () async {
+                    await clearCookiesNative();
+                    UserSession.clear();
+                    if (context.mounted) {
+                      Navigator.of(context).pop();
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute(
+                          builder: (_) => const LoginWebViewPage(),
+                        ),
+                        (route) => false,
+                      );
+                    }
+                  },
+                ),
+              ],
+            ),
+          );
+        },
+      );
+    },
+  );
+}
