@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 class SavioWebViewPage extends StatefulWidget {
-  const SavioWebViewPage({super.key});
+  final String? initialUrl;
+  final String? title;
+
+  const SavioWebViewPage({super.key, this.initialUrl, this.title});
 
   @override
   State<SavioWebViewPage> createState() => _SavioWebViewPageState();
@@ -25,7 +28,7 @@ class _SavioWebViewPageState extends State<SavioWebViewPage> {
           onPageStarted: (_) => _updateNav(),
         ),
       )
-      ..loadRequest(Uri.parse('https://savio.utb.edu.co/my'));
+      ..loadRequest(Uri.parse(widget.initialUrl ?? 'https://savio.utb.edu.co/my'));
   }
 
   Future<void> _updateNav() async {
@@ -43,7 +46,7 @@ class _SavioWebViewPageState extends State<SavioWebViewPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('SAVIO/Moodle'),
+        title: Text(widget.title ?? 'SAVIO/Moodle'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).pop(),
