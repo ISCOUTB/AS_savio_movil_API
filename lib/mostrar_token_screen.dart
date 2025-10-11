@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
+import 'main.dart';
 import 'moodle_token_service.dart';
 
 
@@ -25,12 +27,14 @@ class _MostrarTokenScreenState extends State<MostrarTokenScreen> {
   Future<void> _getToken() async {
     setState(() => _loading = true);
     try {
-  final token = await fetchMoodleMobileToken(widget.cookie ?? '');
+      final token = await fetchMoodleMobileToken(widget.cookie ?? '');
       if (token != null) {
         setState(() {
           _token = token;
           _loading = false;
         });
+        // Guardar el token globalmente para toda la app
+        UserSession.accessToken = token;
       } else {
         setState(() {
           _error = 'No se pudo encontrar el token.';

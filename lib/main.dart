@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'mostrar_token_screen.dart';
 import 'savio_webview_page.dart';
 import 'calcu_nota_webview_page.dart';
+import 'calendario_page.dart';
 
 const MethodChannel sessionChannel = MethodChannel('app/session');
 
@@ -337,7 +338,13 @@ class MenuPage extends StatelessWidget {
         icon: Icons.event_available,
         iconColor: Colors.deepPurple,
         title: 'Calendario inteligente',
-        onTap: () => _toast(context, 'Abrir Calendario inteligente (pendiente)'),
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const CalendarioPage(),
+            ),
+          );
+        },
       ),
       _MenuGridItem(
         color: Colors.teal.shade100,
