@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:table_calendar/table_calendar.dart';
@@ -6,6 +7,7 @@ import 'package:intl/intl.dart';
 import 'main.dart';
 import 'moodle_token_service.dart';
 import 'savio_webview_page.dart';
+import 'notification_service.dart';
 
 class CalendarioPage extends StatefulWidget {
   const CalendarioPage({Key? key}) : super(key: key);
@@ -22,6 +24,8 @@ class _CalendarioPageState extends State<CalendarioPage> {
   DateTime _selectedDay = DateTime.now();
   Map<String, List<Map<String, dynamic>>> _eventsByDay = {};
   final Set<String> _filtroTipos = {'assign', 'quiz'}; // filtros activos
+  Timer? _pollTimer; // actualización periódica
+  Map<String, int> _lastIndex = {}; // key -> timestamp de cierre (o inicio)
 
   String _keyFor(DateTime d) =>
       '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -51,6 +55,54 @@ class _CalendarioPageState extends State<CalendarioPage> {
   void initState() {
     super.initState();
     _fetchActividades();
+    _startPolling();
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(minutes: 5), (_) async {
+      await _refreshAndNotify();
+    });
+  }
+
+  Future<void> _refreshAndNotify() async {
+    try {
+      final previous = Map<String, int>.from(_lastIndex);
+      final actividades = await _cargarActividadesLista();
+      actividades.sort((a, b) => a['fechaInicio'].compareTo(b['fechaInicio']));
+      _rebuildEventsIndex(actividades);
+      final nuevoIndex = _indexActivities(actividades);
+      final cambios = _diffActivities(previous, nuevoIndex);
+      _lastIndex = nuevoIndex;
+      if (cambios.isNotEmpty) {
+        // Notificar hasta 5 cambios por ciclo para evitar spam
+        final toNotify = cambios.take(5);
+        for (final k in toNotify) {
+          final act = actividades.firstWhere(
+            (a) => _makeKey(a) == k,
+            orElse: () => {},
+          );
+          if (act.isNotEmpty) {
+            final nombre = (act['nombre'] ?? 'Actividad').toString();
+            final tipo = (act['tipo'] ?? '').toString();
+            final cierre = (act['fechaCierre'] as DateTime?) ?? (act['fechaInicio'] as DateTime?);
+            final hora = cierre != null ? DateFormat('HH:mm').format(cierre) : '';
+            final titulo = tipo == 'assign' ? 'Nueva/actualizada tarea' : (tipo == 'quiz' ? 'Nuevo/actualizado quiz' : 'Actividad actualizada');
+            final cuerpo = hora.isNotEmpty ? '$nombre • Cierra a las $hora' : nombre;
+            await NotificationService.showSimple(title: titulo, body: cuerpo);
+          }
+        }
+      }
+      if (mounted) setState(() {});
+    } catch (_) {
+      // Silencioso: no mostrar errores en polling
+    }
   }
 
   Future<void> _fetchActividades() async {
@@ -59,120 +111,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
       _error = null;
     });
     try {
-      // Obtener token real de Moodle si es necesario
-      String? token = UserSession.accessToken;
-      final cookie = UserSession.moodleCookie;
-      Future<String?> refreshToken() async {
-        if (cookie == null) throw 'No hay cookie de sesión.';
-        final t = await fetchMoodleMobileToken(cookie);
-        if (t == null) throw 'No se pudo obtener el token de Moodle.';
-        UserSession.accessToken = t;
-        return t;
-      }
-      if (token == null || token == 'webview-session') {
-        token = await refreshToken();
-      }
-      final url = 'https://savio.utb.edu.co/webservice/rest/server.php';
-      // 1) Obtener site info para conocer el userid del token
-      final siteInfoUrl = '$url?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
-      debugPrint('Petición site info: $siteInfoUrl');
-      final responseSiteInfo = await http.get(Uri.parse(siteInfoUrl));
-      if (responseSiteInfo.statusCode != 200) throw 'Error al obtener site info';
-      final decodedSite = json.decode(responseSiteInfo.body);
-      if (decodedSite is Map && (decodedSite.containsKey('exception') || decodedSite.containsKey('error'))) {
-        // Si el token está malo, refrescar y reintentar una sola vez
-        token = await refreshToken();
-        final retrySiteInfoUrl = '$url?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
-        final retrySiteInfo = await http.get(Uri.parse(retrySiteInfoUrl));
-        if (retrySiteInfo.statusCode != 200) throw 'Error al obtener site info';
-        final retryDecoded = json.decode(retrySiteInfo.body);
-        if (retryDecoded is Map && (retryDecoded.containsKey('exception') || retryDecoded.containsKey('error'))) {
-          throw 'Error de Moodle: ${retryDecoded['message'] ?? retryDecoded['error'] ?? retryDecoded.toString()}';
-        }
-        // Remplazar decodedSite con retryDecoded
-        // ignore: prefer_final_locals
-        Map site = retryDecoded as Map;
-        if (site['userid'] == null) throw 'No se pudo determinar el usuario.';
-        final int userId = (site['userid'] as num).toInt();
-        // 2) Obtener cursos por userid
-        final cursosUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
-        debugPrint('Petición cursos: $cursosUrl');
-        var responseCursos = await http.get(Uri.parse(cursosUrl));
-        debugPrint('Respuesta cursos: ${responseCursos.body}');
-        // continuar flujo más abajo con responseCursos
-        // para no duplicar lógica, dejamos que el resto del método procese responseCursos
-        if (responseCursos.statusCode != 200) throw 'Error al obtener cursos';
-        final decodedCursos = json.decode(responseCursos.body);
-        if (decodedCursos is Map && (decodedCursos.containsKey('exception') || decodedCursos.containsKey('error'))) {
-          throw 'Error de Moodle: ${decodedCursos['message'] ?? decodedCursos['error'] ?? decodedCursos.toString()}';
-        }
-        List cursos;
-        if (decodedCursos is List) {
-          cursos = decodedCursos;
-        } else if (decodedCursos is Map && decodedCursos.containsKey('courses')) {
-          cursos = decodedCursos['courses'] as List;
-        } else {
-          throw 'Respuesta inesperada al obtener cursos: ${decodedCursos.toString()}';
-        }
-        // Optimizado: obtener eventos por lotes para reducir el número de peticiones
-        final ids = <int>[];
-        final nombresPorId = <int, String>{};
-        for (var curso in cursos) {
-          final cid = (curso['id'] as num).toInt();
-          ids.add(cid);
-          nombresPorId[cid] = (curso['fullname'] ?? '').toString();
-        }
-
-        List<Map<String, dynamic>> actividades = await _fetchActividadesPorLotes(token!, ids, nombresPorId);
-        actividades.sort((a, b) => a['fechaInicio'].compareTo(b['fechaInicio']));
-        setState(() {
-          _rebuildEventsIndex(actividades);
-          _loading = false;
-        });
-        return;
-      }
-      if (decodedSite['userid'] == null) throw 'No se pudo determinar el usuario.';
-      final int userId = (decodedSite['userid'] as num).toInt();
-
-      // 2) Obtener cursos por userid
-      final cursosUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
-      debugPrint('Petición cursos: $cursosUrl');
-      var responseCursos = await http.get(Uri.parse(cursosUrl));
-      debugPrint('Respuesta cursos: ${responseCursos.body}');
-      // Si el token es inválido, intenta refrescarlo una vez
-      if (responseCursos.statusCode == 200) {
-        final decodedCursos = json.decode(responseCursos.body);
-        if (decodedCursos is Map && (decodedCursos.containsKey('exception') || decodedCursos.containsKey('error'))) {
-          if ((decodedCursos['error'] ?? '').toString().contains('invalidtoken') || (decodedCursos['message'] ?? '').toString().contains('token')) {
-            token = await refreshToken();
-            final retryUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
-            responseCursos = await http.get(Uri.parse(retryUrl));
-          }
-        }
-      }
-      if (responseCursos.statusCode != 200) throw 'Error al obtener cursos';
-      final decodedCursos = json.decode(responseCursos.body);
-      if (decodedCursos is Map && (decodedCursos.containsKey('exception') || decodedCursos.containsKey('error'))) {
-        throw 'Error de Moodle: ${decodedCursos['message'] ?? decodedCursos['error'] ?? decodedCursos.toString()}';
-      }
-      List cursos;
-      if (decodedCursos is List) {
-        cursos = decodedCursos;
-      } else if (decodedCursos is Map && decodedCursos.containsKey('courses')) {
-        cursos = decodedCursos['courses'] as List;
-      } else {
-        throw 'Respuesta inesperada al obtener cursos: ${decodedCursos.toString()}';
-      }
-      // Optimizado: obtener eventos por lotes
-      final ids = <int>[];
-      final nombresPorId = <int, String>{};
-      for (var curso in cursos) {
-        final cid = (curso['id'] as num).toInt();
-        ids.add(cid);
-        nombresPorId[cid] = (curso['fullname'] ?? '').toString();
-      }
-
-      List<Map<String, dynamic>> actividades = await _fetchActividadesPorLotes(token!, ids, nombresPorId);
+      final actividades = await _cargarActividadesLista();
       actividades.sort((a, b) => a['fechaInicio'].compareTo(b['fechaInicio']));
       setState(() {
         _rebuildEventsIndex(actividades);
@@ -184,6 +123,107 @@ class _CalendarioPageState extends State<CalendarioPage> {
         _loading = false;
       });
     }
+  }
+
+  // Carga actividades completas (sin tocar estado), con token refresh y lote
+  Future<List<Map<String, dynamic>>> _cargarActividadesLista() async {
+    // Obtener token real de Moodle si es necesario
+    String? token = UserSession.accessToken;
+    final cookie = UserSession.moodleCookie;
+    Future<String?> refreshToken() async {
+      if (cookie == null) throw 'No hay cookie de sesión.';
+      final t = await fetchMoodleMobileToken(cookie);
+      if (t == null) throw 'No se pudo obtener el token de Moodle.';
+      UserSession.accessToken = t;
+      return t;
+    }
+    if (token == null || token == 'webview-session') {
+      token = await refreshToken();
+    }
+    final url = 'https://savio.utb.edu.co/webservice/rest/server.php';
+    // 1) site info -> userid
+    final siteInfoUrl = '$url?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
+    final responseSiteInfo = await http.get(Uri.parse(siteInfoUrl));
+    if (responseSiteInfo.statusCode != 200) throw 'Error al obtener site info';
+    var decodedSite = json.decode(responseSiteInfo.body);
+    if (decodedSite is Map && (decodedSite.containsKey('exception') || decodedSite.containsKey('error'))) {
+      token = await refreshToken();
+      final retrySiteInfoUrl = '$url?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
+      final retrySiteInfo = await http.get(Uri.parse(retrySiteInfoUrl));
+      if (retrySiteInfo.statusCode != 200) throw 'Error al obtener site info';
+      decodedSite = json.decode(retrySiteInfo.body);
+      if (decodedSite is Map && (decodedSite.containsKey('exception') || decodedSite.containsKey('error'))) {
+        throw 'Error de Moodle: ${decodedSite['message'] ?? decodedSite['error'] ?? decodedSite.toString()}';
+      }
+    }
+    if (decodedSite['userid'] == null) throw 'No se pudo determinar el usuario.';
+    final int userId = (decodedSite['userid'] as num).toInt();
+
+    // 2) cursos por userid
+    final cursosUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
+    var responseCursos = await http.get(Uri.parse(cursosUrl));
+    if (responseCursos.statusCode == 200) {
+      final dc = json.decode(responseCursos.body);
+      if (dc is Map && (dc.containsKey('exception') || dc.containsKey('error'))) {
+        if ((dc['error'] ?? '').toString().contains('invalidtoken') || (dc['message'] ?? '').toString().contains('token')) {
+          token = await refreshToken();
+          final retryUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
+          responseCursos = await http.get(Uri.parse(retryUrl));
+        }
+      }
+    }
+    if (responseCursos.statusCode != 200) throw 'Error al obtener cursos';
+    final decodedCursos = json.decode(responseCursos.body);
+    if (decodedCursos is Map && (decodedCursos.containsKey('exception') || decodedCursos.containsKey('error'))) {
+      throw 'Error de Moodle: ${decodedCursos['message'] ?? decodedCursos['error'] ?? decodedCursos.toString()}';
+    }
+    List cursos;
+    if (decodedCursos is List) {
+      cursos = decodedCursos;
+    } else if (decodedCursos is Map && decodedCursos.containsKey('courses')) {
+      cursos = decodedCursos['courses'] as List;
+    } else {
+      throw 'Respuesta inesperada al obtener cursos: ${decodedCursos.toString()}';
+    }
+    // Lote de eventos
+    final ids = <int>[];
+    final nombresPorId = <int, String>{};
+    for (var curso in cursos) {
+      final cid = (curso['id'] as num).toInt();
+      ids.add(cid);
+      nombresPorId[cid] = (curso['fullname'] ?? '').toString();
+    }
+    final actividades = await _fetchActividadesPorLotes(token!, ids, nombresPorId);
+    return actividades;
+  }
+
+  Map<String, int> _indexActivities(List<Map<String, dynamic>> acts) {
+    final map = <String, int>{};
+    for (final a in acts) {
+      final k = _makeKey(a);
+      final cierre = (a['fechaCierre'] as DateTime?) ?? (a['fechaInicio'] as DateTime?);
+      map[k] = (cierre?.millisecondsSinceEpoch ?? (a['fechaInicio'] as DateTime).millisecondsSinceEpoch);
+    }
+    return map;
+  }
+
+  Iterable<String> _diffActivities(Map<String, int> oldIdx, Map<String, int> newIdx) {
+    final changes = <String>{};
+    for (final k in newIdx.keys) {
+      if (!oldIdx.containsKey(k)) {
+        changes.add(k); // nueva
+      } else if (oldIdx[k] != newIdx[k]) {
+        changes.add(k); // modificada
+      }
+    }
+    return changes;
+  }
+
+  String _makeKey(Map<String, dynamic> a) {
+    final tipo = (a['tipo'] ?? '').toString();
+    final cid = a['courseid']?.toString() ?? '';
+    final id = (a['cmid']?.toString() ?? a['instance']?.toString() ?? a['nombre']?.toString() ?? '');
+    return '$tipo|$cid|$id';
   }
 
   // Obtiene actividades (eventos de calendario y, si faltan, fallbacks) por lotes para los cursos indicados

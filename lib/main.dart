@@ -5,6 +5,7 @@ import 'mostrar_token_screen.dart';
 import 'savio_webview_page.dart';
 import 'calcu_nota_webview_page.dart';
 import 'calendario_page.dart';
+import 'notification_service.dart';
 
 const MethodChannel sessionChannel = MethodChannel('app/session');
 
@@ -14,7 +15,10 @@ Future<void> clearCookiesNative() async {
   } catch (_) {}
 }
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await NotificationService.init();
+  await NotificationService.requestPermissionsIfNeeded();
   runApp(const SavioApp());
 }
 
@@ -529,10 +533,6 @@ class _MenuGridItem extends StatelessWidget {
     );
   }
 }
-
-  void _toast(BuildContext context, String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
 
   void _showProfile(BuildContext context) async {
     showModalBottomSheet(
