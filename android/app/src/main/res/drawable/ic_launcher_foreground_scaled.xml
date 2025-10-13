@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <scale xmlns:android="http://schemas.android.com/apk/res/android"
-    android:scaleWidth="40%"
-    android:scaleHeight="40%"
+    android:scaleWidth="70%"
+    android:scaleHeight="70%"
     android:useIntrinsicSizeAsMinimum="true">
     <bitmap
-        android:src="@mipmap/ic_launcher"
+        android:src="@drawable/ic_launcher_foreground"
         android:gravity="center" />
-  </scale>
+</scale>

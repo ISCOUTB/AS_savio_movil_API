@@ -7,7 +7,7 @@ import 'moodle_token_service.dart';
 
 class MostrarTokenScreen extends StatefulWidget {
   final String? cookie;
-  const MostrarTokenScreen({Key? key, this.cookie}) : super(key: key);
+  const MostrarTokenScreen({super.key, this.cookie});
 
   @override
   State<MostrarTokenScreen> createState() => _MostrarTokenScreenState();
@@ -43,7 +43,7 @@ class _MostrarTokenScreenState extends State<MostrarTokenScreen> {
       }
     } catch (e) {
       setState(() {
-        _error = 'Error: ' + e.toString();
+        _error = 'Error: ${e.toString()}';
         _loading = false;
       });
     }
@@ -101,7 +101,7 @@ class _MostrarTokenScreenState extends State<MostrarTokenScreen> {
                               borderRadius: BorderRadius.circular(20),
                               boxShadow: [
                                 BoxShadow(
-                                  color: Colors.black.withOpacity(0.04),
+                                  color: Colors.black.withValues(alpha: 0.04),
                                   blurRadius: 8,
                                   offset: const Offset(0, 4),
                                 ),

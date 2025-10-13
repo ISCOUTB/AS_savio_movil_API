@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'package:flutter/services.dart';
 import 'mostrar_token_screen.dart';
 import 'savio_webview_page.dart';
 import 'calcu_nota_webview_page.dart';
 import 'calendario_page.dart';
 import 'notification_service.dart';
+import 'file_change_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:workmanager/workmanager.dart' as wm;
+import 'dart:io' show Platform;
+import 'dart:convert';
 
 const MethodChannel sessionChannel = MethodChannel('app/session');
 
@@ -17,9 +24,61 @@ Future<void> clearCookiesNative() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await NotificationService.init();
+  await initializeDateFormatting('es');
+  await NotificationService.init(onSelect: _onNotificationTap);
   await NotificationService.requestPermissionsIfNeeded();
+  // Iniciar verificación de cambios en archivos (nuevo/actualizado/eliminado)
+  FileChangeService.start();
+  // Android: Workmanager para tareas periódicas en segundo plano
+  if (Platform.isAndroid) {
+    await wm.Workmanager().initialize(
+      _backgroundDispatcher,
+      // isInDebugMode is deprecated; remove it and rely on default behavior
+    );
+    // Programar tarea periódica cada 15 min (mínimo en Android)
+    await wm.Workmanager().registerPeriodicTask(
+      FileChangeService.taskName,
+      FileChangeService.taskName,
+      frequency: const Duration(minutes: 15),
+      existingWorkPolicy: wm.ExistingPeriodicWorkPolicy.keep,
+      constraints: wm.Constraints(
+        networkType: wm.NetworkType.connected,
+      ),
+      backoffPolicy: wm.BackoffPolicy.linear,
+      backoffPolicyDelay: const Duration(minutes: 5),
+    );
+  }
+
+  // iOS: sin tareas periódicas por restricciones; se puede considerar Push Notifications en el futuro.
   runApp(const SavioApp());
+  // Si la app se abrió por tocar una notificación, procesar el deep link
+  final launchPayload = await NotificationService.getLaunchPayload();
+  if (launchPayload != null && launchPayload.isNotEmpty) {
+    _onNotificationTap(launchPayload);
+  }
+}
+
+@pragma('vm:entry-point')
+void _backgroundDispatcher() {
+  wm.Workmanager().executeTask((task, inputData) async {
+    // Requiere inicializar plugins dentro del isolate
+    WidgetsFlutterBinding.ensureInitialized();
+    await NotificationService.init();
+
+    try {
+      // Restaurar cookie/token si están en SharedPreferences
+      final sp = await SharedPreferences.getInstance();
+      UserSession.moodleCookie = sp.getString('moodleCookie');
+      UserSession.accessToken = sp.getString('accessToken');
+    } catch (_) {}
+
+    try {
+      // Ejecutar una comprobación
+      await FileChangeService.checkNow();
+    } catch (_) {}
+    // Devolver true para indicar éxito
+    return Future.value(true);
+  });
 }
 
 class SavioApp extends StatelessWidget {
@@ -28,8 +87,18 @@ class SavioApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: appNavigatorKey,
       debugShowCheckedModeBanner: false,
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo),
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('es'),
+        Locale('en'),
+      ],
       home: const LoginWebViewPage(),
     );
   }
@@ -226,6 +295,11 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
         }
       } catch (_) {}
       UserSession.moodleCookie = cookie;
+      // Persistir para background
+      try {
+        final sp = await SharedPreferences.getInstance();
+        if (cookie != null) await sp.setString('moodleCookie', cookie);
+      } catch (_) {}
       setState(() {
         _ready = true;
         _transitioning = true; // ocultar cualquier contenido intermedio
@@ -235,6 +309,10 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
         await _controller.loadRequest(Uri.parse('about:blank'));
       } catch (_) {}
       UserSession.accessToken = 'webview-session';
+      try {
+        final sp = await SharedPreferences.getInstance();
+        await sp.setString('accessToken', UserSession.accessToken!);
+      } catch (_) {}
       if (!mounted) return;
       await Future<void>.delayed(const Duration(milliseconds: 100));
       if (!mounted) return;
@@ -266,12 +344,22 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
       appBar: AppBar(
         title: const Text('Iniciar sesión'),
         actions: [
-          IconButton(
-            tooltip: 'Recargar',
-            icon: const Icon(Icons.refresh),
-            onPressed: () {
-              _controller.reload();
+          GestureDetector(
+            onLongPress: () async {
+              // Disparar comprobación manual de archivos para pruebas
+              await FileChangeService.checkNow();
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Comprobación de materiales realizada')),
+              );
             },
+            child: IconButton(
+              tooltip: 'Recargar',
+              icon: const Icon(Icons.refresh),
+              onPressed: () {
+                _controller.reload();
+              },
+            ),
           ),
         ],
       ),
@@ -280,34 +368,72 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
           WebViewWidget(controller: _controller),
           if (_transitioning || _checking || _coverSavio)
             Container(
-              color: Colors.white,
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Image.asset(
-                        'assets/savioof.png',
-                        width: 200,
-                        height: 200,
-                        fit: BoxFit.contain,
-                      ),
-                      const SizedBox(height: 36),
-                      Text(
-                        _transitioning
-                            ? 'Iniciando sesión...'
-                            : (_coverSavio
-                                  ? 'Cargando aplicación...'
-                                  : 'Verificando sesión...'),
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.black,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Color(0xFFF7F7FF), Colors.white],
                 ),
+              ),
+              child: SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final maxW = constraints.maxWidth;
+                    final logoW = (maxW * 0.55).clamp(160.0, 260.0);
+                    final message = _transitioning
+                        ? 'Iniciando sesión...'
+                        : (_coverSavio ? 'Cargando aplicación...' : 'Verificando sesión...');
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 360),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              // Logo SAVIO proporcionado y centrado
+                              Image.asset(
+                                'assets/savioof.png',
+                                width: logoW,
+                                fit: BoxFit.contain,
+                                semanticLabel: 'SAVIO',
+                              ),
+                              const SizedBox(height: 22),
+                              const SizedBox(
+                                width: 28,
+                                height: 28,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.6,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 200),
+                                child: Text(
+                                  message,
+                                  key: ValueKey<String>(message),
+                                  style: const TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.black,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              const Text(
+                                'Por favor espera unos segundos',
+                                style: TextStyle(color: Colors.black54),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
             ),
         ],
       ),
@@ -388,7 +514,7 @@ class MenuPage extends StatelessWidget {
                 shape: BoxShape.circle,
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
+                    color: Colors.black.withValues(alpha: 0.08),
                     blurRadius: 4,
                     offset: const Offset(0, 2),
                   ),
@@ -416,7 +542,7 @@ class MenuPage extends StatelessWidget {
         ],
       ),
       body: Container(
-        color: Colors.grey[50],
+  color: Colors.grey[50],
         child: LayoutBuilder(
           builder: (context, constraints) {
             // Ajustar el aspect ratio según el alto disponible
@@ -472,7 +598,7 @@ class _MenuGridItem extends StatelessWidget {
             borderRadius: BorderRadius.circular(22),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.04),
+                color: Colors.black.withValues(alpha: 0.04),
                 blurRadius: 8,
                 offset: const Offset(0, 4),
               ),
@@ -490,7 +616,7 @@ class _MenuGridItem extends StatelessWidget {
                         shape: BoxShape.circle,
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.08),
+                            color: Colors.black.withValues(alpha: 0.08),
                             blurRadius: 10,
                             offset: const Offset(0, 4),
                           ),
@@ -505,7 +631,7 @@ class _MenuGridItem extends StatelessWidget {
                         shape: BoxShape.circle,
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.06),
+                            color: Colors.black.withValues(alpha: 0.06),
                             blurRadius: 8,
                             offset: const Offset(0, 4),
                           ),
@@ -534,6 +660,35 @@ class _MenuGridItem extends StatelessWidget {
   }
 }
 
+// Global navigator key to allow navigation from notification taps even when no context is at hand
+final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
+
+// Handle notification payloads to deep-link into Savio/Moodle
+void _onNotificationTap(String payload) {
+  try {
+    final data = json.decode(payload);
+    if (data is Map) {
+      final String? url = data['url'] as String?;
+      final String? title = data['title'] as String?;
+      if (url != null && url.isNotEmpty) {
+        final nav = appNavigatorKey.currentState;
+        if (nav != null) {
+          nav.push(
+            MaterialPageRoute(
+              builder: (_) => SavioWebViewPage(
+                initialUrl: url,
+                title: title ?? 'SAVIO/Moodle',
+              ),
+            ),
+          );
+        }
+      }
+    }
+  } catch (_) {
+    // ignore malformed payloads
+  }
+}
+
   void _showProfile(BuildContext context) async {
     showModalBottomSheet(
       context: context,
@@ -541,12 +696,16 @@ class _MenuGridItem extends StatelessWidget {
       backgroundColor: Colors.transparent,
       builder: (ctx) {
         return DraggableScrollableSheet(
-          initialChildSize: 0.32,
-          minChildSize: 0.2,
-          maxChildSize: 0.5,
+          initialChildSize: 0.45,
+          minChildSize: 0.25,
+          maxChildSize: 0.9,
           expand: false,
           builder: (context, scrollController) {
-            return Container(
+            return FutureBuilder<bool>(
+              future: NotificationService.areNotificationsAllowed(),
+              builder: (context, snap) {
+                final notifAllowed = snap.data == true;
+                return Container(
               width: double.infinity,
               decoration: const BoxDecoration(
                 color: Colors.white,
@@ -559,56 +718,153 @@ class _MenuGridItem extends StatelessWidget {
                   ),
                 ],
               ),
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
               child: ListView(
                 controller: scrollController,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
                 children: [
                   Center(
                     child: Container(
                       width: 48,
                       height: 5,
-                      margin: const EdgeInsets.only(bottom: 18),
+                      margin: const EdgeInsets.only(bottom: 16),
                       decoration: BoxDecoration(
                         color: Colors.grey[300],
                         borderRadius: BorderRadius.circular(4),
                       ),
                     ),
                   ),
-                  const Text(
-                    'Sesión Microsoft activa',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    textAlign: TextAlign.center,
+                  Row(
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.indigo.shade50,
+                          shape: BoxShape.circle,
+                        ),
+                        padding: const EdgeInsets.all(6),
+                        child: CircleAvatar(
+                          radius: 28,
+                          backgroundColor: Colors.white,
+                          child: ClipOval(
+                            child: Image.asset(
+                              'assets/images.png',
+                              width: 48,
+                              height: 48,
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Tu sesión',
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                            ),
+                            Row(
+                              children: const [
+                                Icon(Icons.verified_user, size: 16, color: Colors.green),
+                                SizedBox(width: 6),
+                                Text('Sesión Microsoft activa', style: TextStyle(color: Colors.black54)),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 18),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.deepPurple,
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size.fromHeight(48),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                  const SizedBox(height: 16),
+                  Divider(height: 1, color: Colors.grey[200]),
+                  const SizedBox(height: 8),
+                  // Acciones rápidas
+                  if (!notifAllowed)
+                    Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      color: Colors.grey[50],
+                      child: Column(
+                        children: [
+                          ListTile(
+                            leading: const Icon(Icons.notifications_active, color: Colors.deepPurple),
+                            title: const Text('Notificaciones'),
+                            subtitle: const Text('Permite las notificaciones para recibir alertas'),
+                            trailing: OutlinedButton(
+                              onPressed: () async {
+                                // En muchos dispositivos, si el usuario negó, debemos abrir configuración
+                                await NotificationService.requestPermissionsIfNeeded();
+                                final allowed = await NotificationService.areNotificationsAllowed();
+                                if (!allowed) {
+                                  await NotificationService.openAppSettingsPage();
+                                }
+                              },
+                              child: const Text('Configurar'),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
+                  const SizedBox(height: 16),
+                  // Botón principal: Cerrar sesión
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.redAccent,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size.fromHeight(52),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
                     icon: const Icon(Icons.logout),
-                    label: const Text('Cerrar sesión', style: TextStyle(fontSize: 16)),
+                    label: const Text('Cerrar sesión', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                     onPressed: () async {
+                      final ok = await _confirmLogout(context);
+                      if (ok != true) return;
                       await clearCookiesNative();
                       UserSession.clear();
+                      try {
+                        final sp = await SharedPreferences.getInstance();
+                        await sp.remove('moodleCookie');
+                        await sp.remove('accessToken');
+                      } catch (_) {}
                       if (context.mounted) {
                         Navigator.of(context).pop();
                         Navigator.of(context).pushAndRemoveUntil(
-                          MaterialPageRoute(
-                            builder: (_) => const LoginWebViewPage(),
-                          ),
+                          MaterialPageRoute(builder: (_) => const LoginWebViewPage()),
                           (route) => false,
                         );
                       }
                     },
                   ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancelar'),
+                  ),
                 ],
               ),
             );
+              },
+            );
           },
+        );
+      },
+    );
+  }
+
+  Future<bool?> _confirmLogout(BuildContext context) async {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Cerrar sesión'),
+          content: const Text('¿Seguro que quieres cerrar tu sesión y volver a iniciar?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancelar')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Cerrar sesión'),
+            ),
+          ],
         );
       },
     );

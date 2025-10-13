@@ -9,8 +9,16 @@ import 'moodle_token_service.dart';
 import 'savio_webview_page.dart';
 import 'notification_service.dart';
 
+// Urgency helper for badges and sorting
+class _Urgency {
+  final int rank;
+  final String? label;
+  final Color color;
+  const _Urgency(this.rank, this.label, this.color);
+}
+
 class CalendarioPage extends StatefulWidget {
-  const CalendarioPage({Key? key}) : super(key: key);
+  const CalendarioPage({super.key});
 
   @override
   State<CalendarioPage> createState() => _CalendarioPageState();
@@ -26,6 +34,13 @@ class _CalendarioPageState extends State<CalendarioPage> {
   final Set<String> _filtroTipos = {'assign', 'quiz'}; // filtros activos
   Timer? _pollTimer; // actualización periódica
   Map<String, int> _lastIndex = {}; // key -> timestamp de cierre (o inicio)
+  // Cache de estado de entrega por actividad (clave construida con _makeKey)
+  final Map<String, String> _estadoEntregaCache = {}; // valores: 'entregado' | 'pendiente' | 'na'
+  final Set<String> _estadoEnCarga = {}; // para evitar llamadas duplicadas
+  // Nuevo: búsqueda, filtro por curso y vista
+  // Eliminado campo de búsqueda: solo se conserva filtro por curso y tipos
+  int _cursoFiltro = -1; // -1 = todos
+  Map<int, String> _cursosDisponibles = {}; // courseId -> nombre
 
   String _keyFor(DateTime d) =>
       '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -77,6 +92,10 @@ class _CalendarioPageState extends State<CalendarioPage> {
       final actividades = await _cargarActividadesLista();
       actividades.sort((a, b) => a['fechaInicio'].compareTo(b['fechaInicio']));
       _rebuildEventsIndex(actividades);
+      _cursosDisponibles = {
+        for (final a in actividades)
+          if (a['courseid'] is int) (a['courseid'] as int): (a['curso'] ?? 'Curso') as String
+      };
       final nuevoIndex = _indexActivities(actividades);
       final cambios = _diffActivities(previous, nuevoIndex);
       _lastIndex = nuevoIndex;
@@ -93,9 +112,35 @@ class _CalendarioPageState extends State<CalendarioPage> {
             final tipo = (act['tipo'] ?? '').toString();
             final cierre = (act['fechaCierre'] as DateTime?) ?? (act['fechaInicio'] as DateTime?);
             final hora = cierre != null ? DateFormat('HH:mm').format(cierre) : '';
-            final titulo = tipo == 'assign' ? 'Nueva/actualizada tarea' : (tipo == 'quiz' ? 'Nuevo/actualizado quiz' : 'Actividad actualizada');
+            final curso = (act['curso'] ?? 'Curso').toString();
+            final titulo = tipo == 'assign'
+                ? '[$curso] Tarea actualizada'
+                : (tipo == 'quiz' ? '[$curso] Quiz actualizado' : '[$curso] Actividad actualizada');
             final cuerpo = hora.isNotEmpty ? '$nombre • Cierra a las $hora' : nombre;
-            await NotificationService.showSimple(title: titulo, body: cuerpo);
+
+            // Construir URL para deep link
+            String? url = (act['url'] is String && (act['url'] as String).isNotEmpty) ? act['url'] as String : null;
+            final int? cmid = act['cmid'] is num ? (act['cmid'] as num).toInt() : int.tryParse('${act['cmid'] ?? ''}');
+            final int? courseId = act['courseid'] is num ? (act['courseid'] as num).toInt() : int.tryParse('${act['courseid'] ?? ''}');
+            if (url == null) {
+              if (cmid != null && cmid > 0) {
+                final base = 'https://savio.utb.edu.co';
+                if (tipo == 'assign') url = '$base/mod/assign/view.php?id=$cmid';
+                if (tipo == 'quiz') url = '$base/mod/quiz/view.php?id=$cmid';
+              } else if (courseId != null && courseId > 0) {
+                url = 'https://savio.utb.edu.co/course/view.php?id=$courseId';
+              }
+            }
+            final payload = json.encode({
+              'url': url ?? 'https://savio.utb.edu.co/my',
+              'title': nombre,
+            });
+            await NotificationService.showSimple(
+              title: titulo,
+              body: cuerpo,
+              id: k.hashCode & 0x7FFFFFFF,
+              payload: payload,
+            );
           }
         }
       }
@@ -115,6 +160,10 @@ class _CalendarioPageState extends State<CalendarioPage> {
       actividades.sort((a, b) => a['fechaInicio'].compareTo(b['fechaInicio']));
       setState(() {
         _rebuildEventsIndex(actividades);
+        _cursosDisponibles = {
+          for (final a in actividades)
+            if (a['courseid'] is int) (a['courseid'] as int): (a['curso'] ?? 'Curso') as String
+        };
         _loading = false;
       });
     } catch (e) {
@@ -343,7 +392,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     const base = 'https://savio.utb.edu.co/webservice/rest/server.php';
     final resultados = <dynamic>[];
 
-    Future<http.Response> _get(String query) async {
+    Future<http.Response> doGet(String query) async {
       final full = '$base?$query';
       debugPrint('GET: $full');
       return await http.get(Uri.parse(full));
@@ -358,7 +407,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
           .join('&');
       final q1 = 'wstoken=$token&wsfunction=core_calendar_get_calendar_events&moodlewsrestformat=json&$idsQueryEvents&options%5Bignorehidden%5D=1&options%5Buserevents%5D=0&options%5Bsiteevents%5D=0';
       try {
-        final r1 = await _get(q1);
+        final r1 = await doGet(q1);
         if (r1.statusCode == 200) {
           final d1 = json.decode(r1.body);
           if (d1 is Map && (d1.containsKey('exception') || d1.containsKey('error'))) {
@@ -371,7 +420,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
                   .map((e) => 'courseids%5B${e.key}%5D=${e.value}')
                   .join('&');
               final q2 = 'wstoken=$token&wsfunction=core_calendar_get_calendar_events&moodlewsrestformat=json&$idsQueryPlain&options%5Bignorehidden%5D=1&options%5Buserevents%5D=0&options%5Bsiteevents%5D=0';
-              final r2 = await _get(q2);
+              final r2 = await doGet(q2);
               if (r2.statusCode == 200) {
                 final d2 = json.decode(r2.body);
                 if (d2 is Map && !(d2.containsKey('exception') || d2.containsKey('error'))) {
@@ -394,7 +443,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     const base = 'https://savio.utb.edu.co/webservice/rest/server.php';
     final resultados = <dynamic>[];
 
-    Future<http.Response> _get(String query) async {
+    Future<http.Response> doGet(String query) async {
       final full = '$base?$query';
       debugPrint('GET: $full');
       return await http.get(Uri.parse(full));
@@ -408,7 +457,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
           .join('&');
       final q = 'wstoken=$token&wsfunction=mod_assign_get_assignments&moodlewsrestformat=json&$idsQuery';
       try {
-        final r = await _get(q);
+        final r = await doGet(q);
         if (r.statusCode == 200) {
           final d = json.decode(r.body);
           final courses = (d['courses'] ?? []) as List;
@@ -431,7 +480,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     const base = 'https://savio.utb.edu.co/webservice/rest/server.php';
     final resultados = <dynamic>[];
 
-    Future<http.Response> _get(String query) async {
+    Future<http.Response> doGet(String query) async {
       final full = '$base?$query';
       debugPrint('GET: $full');
       return await http.get(Uri.parse(full));
@@ -445,7 +494,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
           .join('&');
       final q = 'wstoken=$token&wsfunction=mod_quiz_get_quizzes_by_courses&moodlewsrestformat=json&$idsQuery';
       try {
-        final r = await _get(q);
+        final r = await doGet(q);
         if (r.statusCode == 200) {
           final d = json.decode(r.body);
           final quizzes = (d['quizzes'] ?? []) as List;
@@ -461,9 +510,12 @@ class _CalendarioPageState extends State<CalendarioPage> {
 
   @override
   Widget build(BuildContext context) {
-    final todaysKey = _keyFor(_selectedDay);
-    final actividadesDelDia = _eventsByDay[todaysKey] ?? [];
+  final DateTime baseDia = _selectedDay;
+  final actividadesBase = (_eventsByDay[_keyFor(baseDia)] ?? const <Map<String, dynamic>>[]);
+    final actividadesFiltradas = _filtrarYOrdenar(actividadesBase);
 
+  final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+  final collapseCalendar = bottomInset > 0;
     return Scaffold(
       appBar: AppBar(title: const Text('Calendario de Actividades')),
       body: Container(
@@ -476,74 +528,138 @@ class _CalendarioPageState extends State<CalendarioPage> {
         ),
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Card(
-                elevation: 1,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                child: Padding(
-                  padding: const EdgeInsets.all(6.0),
-                  child: TableCalendar<Map<String, dynamic>>(
-              firstDay: DateTime.utc(2018, 1, 1),
-              lastDay: DateTime.utc(2100, 12, 31),
-              focusedDay: _focusedDay,
-              startingDayOfWeek: StartingDayOfWeek.monday,
-              calendarFormat: CalendarFormat.month,
-              selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-              eventLoader: (day) => (_eventsByDay[_keyFor(day)] ?? []),
-              onDaySelected: (selectedDay, focusedDay) {
-                setState(() {
-                  _selectedDay = selectedDay;
-                  _focusedDay = focusedDay;
-                });
-              },
-              onPageChanged: (focusedDay) => _focusedDay = focusedDay,
-                    headerStyle: const HeaderStyle(
-                      formatButtonVisible: false,
-                      titleCentered: true,
-                      titleTextStyle: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    calendarStyle: const CalendarStyle(
-                      isTodayHighlighted: true,
-                      todayDecoration: BoxDecoration(color: Color(0x332196F3), shape: BoxShape.circle),
-                      selectedDecoration: BoxDecoration(color: Colors.deepPurple, shape: BoxShape.circle),
+            AnimatedCrossFade(
+              duration: const Duration(milliseconds: 180),
+              crossFadeState: collapseCalendar ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+              firstChild: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Card(
+                  elevation: 1,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4.0),
+                    child: TableCalendar<Map<String, dynamic>>(
+                      firstDay: DateTime.utc(2018, 1, 1),
+                      lastDay: DateTime.utc(2100, 12, 31),
+                      focusedDay: _focusedDay,
+                      locale: 'es',
+                      startingDayOfWeek: StartingDayOfWeek.monday,
+                      calendarFormat: CalendarFormat.month,
+                      rowHeight: 36,
+                      daysOfWeekHeight: 18,
+                      selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+                      daysOfWeekStyle: DaysOfWeekStyle(
+                        weekendStyle: TextStyle(color: Colors.redAccent.withValues(alpha: 0.7), fontWeight: FontWeight.w600, fontSize: 11),
+                        weekdayStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 11),
+                        dowTextFormatter: (date, locale) {
+                          final txt = DateFormat.E(locale).format(date);
+                          return txt.substring(0, 1).toUpperCase();
+                        },
+                      ),
+                      eventLoader: (day) => (_eventsByDay[_keyFor(day)] ?? []),
+                      onDaySelected: (selectedDay, focusedDay) {
+                        setState(() {
+                          _selectedDay = selectedDay;
+                          _focusedDay = focusedDay;
+                        });
+                      },
+                      onPageChanged: (focusedDay) => _focusedDay = focusedDay,
+                      headerStyle: const HeaderStyle(
+                        formatButtonVisible: false,
+                        titleCentered: true,
+                        leftChevronIcon: Icon(Icons.chevron_left_rounded),
+                        rightChevronIcon: Icon(Icons.chevron_right_rounded),
+                        titleTextStyle: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                      ),
+                      calendarStyle: const CalendarStyle(
+                        isTodayHighlighted: true,
+                        todayDecoration: BoxDecoration(
+                          color: Color(0x1F7C4DFF),
+                          shape: BoxShape.circle,
+                        ),
+                        todayTextStyle: TextStyle(color: Color(0xFF5B2EE5), fontWeight: FontWeight.w800),
+                        selectedDecoration: BoxDecoration(color: Color(0xFF5B2EE5), shape: BoxShape.circle),
+                        selectedTextStyle: TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+                        outsideDaysVisible: true,
+                      ),
+                      calendarBuilders: CalendarBuilders<Map<String, dynamic>>(
+                        selectedBuilder: (context, date, _) => _buildDayCircle(date, const Color(0xFF5B2EE5), Colors.white),
+                        todayBuilder: (context, date, _) => _buildDayCircle(date, const Color(0x1F7C4DFF), const Color(0xFF5B2EE5), filled: false),
+                        markerBuilder: (context, date, events) => _buildMarkers(events),
+                      ),
                     ),
                   ),
                 ),
               ),
+              secondChild: const SizedBox.shrink(),
             ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.event_note, size: 18),
+                    const SizedBox(width: 6),
+                    const Text('Actividades', style: TextStyle(fontWeight: FontWeight.w700)),
+                    const Spacer(),
+                    if (_loading) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                  ],
+                ),
+                const SizedBox(height: 6),
+              ],
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 12),
+            child: Divider(height: 12),
+          ),
+          // Búsqueda y filtros
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
             child: Row(
               children: [
-                const Icon(Icons.event_note, size: 20),
-                const SizedBox(width: 8),
-                Text('Actividades del ${_formatFechaCorta(_selectedDay)}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                const Spacer(),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    setState(() {
-                      _selectedDay = DateTime.now();
-                      _focusedDay = _selectedDay;
-                    });
-                  },
-                  icon: const Icon(Icons.today, size: 16),
-                  label: const Text('Hoy'),
-                  style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                Expanded(
+                  child: Container(
+                    height: 40,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      border: Border.all(color: Colors.black12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<int>(
+                        isDense: true,
+                        value: _cursoFiltro,
+                        onChanged: (v) => setState(() => _cursoFiltro = v ?? -1),
+                        items: [
+                          const DropdownMenuItem(value: -1, child: Text('Todos los cursos')),
+                          ..._cursosDisponibles.entries
+                              .map((e) => DropdownMenuItem<int>(value: e.key, child: Text(_shorten(e.value, 26)))),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
-                if (_loading) const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
               ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
             child: Wrap(
               spacing: 8,
               children: [
                 ChoiceChip(
                   selected: _filtroTipos.contains('assign'),
-                  label: const Text('Tareas'),
-                  avatar: const Icon(Icons.assignment, size: 18),
+                  label: Text('Tareas', style: TextStyle(color: _tipoColor('assign'), fontSize: 12, fontWeight: FontWeight.w700)),
+                  avatar: Icon(Icons.assignment, size: 16, color: _tipoColor('assign')),
+                  backgroundColor: _tipoColor('assign').withValues(alpha: 0.10),
+                  selectedColor: _tipoColor('assign').withValues(alpha: 0.18),
+                  side: BorderSide(color: _tipoColor('assign').withValues(alpha: 0.45)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   onSelected: (v) => setState(() {
                     if (v) {
                       _filtroTipos.add('assign');
@@ -554,8 +670,13 @@ class _CalendarioPageState extends State<CalendarioPage> {
                 ),
                 ChoiceChip(
                   selected: _filtroTipos.contains('quiz'),
-                  label: const Text('Quices'),
-                  avatar: const Icon(Icons.quiz, size: 18),
+                  label: Text('Quices', style: TextStyle(color: _tipoColor('quiz'), fontSize: 12, fontWeight: FontWeight.w700)),
+                  avatar: Icon(Icons.quiz, size: 16, color: _tipoColor('quiz')),
+                  backgroundColor: _tipoColor('quiz').withValues(alpha: 0.10),
+                  selectedColor: _tipoColor('quiz').withValues(alpha: 0.18),
+                  side: BorderSide(color: _tipoColor('quiz').withValues(alpha: 0.45)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   onSelected: (v) => setState(() {
                     if (v) {
                       _filtroTipos.add('quiz');
@@ -568,7 +689,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
             ),
           ),
           Expanded(
-            child: _buildActivityList(actividadesDelDia.where((a) => _filtroTipos.contains(a['tipo'])).toList()),
+            child: _buildActivityList(actividadesFiltradas),
           ),
         ],
       ),
@@ -577,6 +698,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
   }
 
   Widget _buildActivityList(List<Map<String, dynamic>> actividadesDelDia) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
     if (_error != null) {
       return Center(
         child: Padding(
@@ -608,9 +730,9 @@ class _CalendarioPageState extends State<CalendarioPage> {
       onRefresh: _fetchActividades,
       child: ListView.separated(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+        padding: EdgeInsets.fromLTRB(8, 4, 8, 8 + bottomInset),
         itemCount: actividadesDelDia.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 8),
+        separatorBuilder: (_, __) => const SizedBox(height: 4),
         itemBuilder: (context, i) {
           final act = actividadesDelDia[i];
           final Color color = _tipoColor(act['tipo']);
@@ -623,24 +745,50 @@ class _CalendarioPageState extends State<CalendarioPage> {
               ? _formatDuracion(cierre.difference(now))
               : '';
           final Color badgeColor = vencido ? Colors.red : (cierre != null ? Colors.green : color);
+          final _Urgency u = _urgencyInfo(cierre);
+
+          // Asegurar la carga del estado de entrega (lazy)
+          final String key = _makeKey(act);
+          _ensureEstadoEntrega(act, key);
+          final String? estado = _estadoEntregaCache[key]; // 'entregado' | 'pendiente' | 'na' | null
+          final bool entregado = estado == 'entregado';
+          final bool esEvaluable = (act['tipo'] == 'assign' || act['tipo'] == 'quiz');
+          final Color estadoColor = entregado
+              ? Colors.green
+              : (vencido ? Colors.red : Colors.amber[800]!);
           return Card(
-            elevation: 0.5,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            elevation: 0.25,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             child: Container(
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
-                border: Border(left: BorderSide(color: color, width: 4)),
+                borderRadius: BorderRadius.circular(10),
+                border: Border(left: BorderSide(color: color, width: 3)),
               ),
               child: ListTile(
-                isThreeLine: true,
-                leading: CircleAvatar(
-                  backgroundColor: color.withOpacity(0.12),
-                  child: Icon(
-                    act['tipo'] == 'assign' ? Icons.assignment : Icons.quiz,
-                    color: color,
+                dense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                leading: SizedBox(
+                  width: 32,
+                  child: Container(
+                    height: 28,
+                    width: 28,
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      act['tipo'] == 'assign' ? Icons.assignment : Icons.quiz,
+                      color: color,
+                      size: 16,
+                    ),
                   ),
                 ),
-                title: Text(act['nombre'] ?? ''),
+                title: Text(
+                  act['nombre'] ?? '',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
+                ),
                 subtitle: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -648,56 +796,82 @@ class _CalendarioPageState extends State<CalendarioPage> {
                       '${act['curso']} • $hora',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 12, color: Colors.black.withValues(alpha: 0.6)),
                     ),
-                    if (cierre != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4.0),
-                        child: Wrap(
-                          spacing: 8,
-                          runSpacing: 4,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          children: [
-                            Icon(vencido ? Icons.lock_clock : Icons.schedule, size: 16, color: badgeColor),
-                            Text(
-                              vencido ? 'Cerrado a las $horaCierre' : 'Cierra a las $horaCierre',
-                              style: TextStyle(
-                                color: badgeColor,
-                                fontWeight: FontWeight.w600,
+                    if (cierre != null) ...[
+                      const SizedBox(height: 4),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          if (u.label != null)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: u.color.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: u.color.withValues(alpha: 0.45)),
+                              ),
+                              child: Text(
+                                u.label!,
+                                style: TextStyle(color: u.color, fontSize: 11, fontWeight: FontWeight.w700),
                               ),
                             ),
-                            if (!vencido && restante.isNotEmpty)
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: badgeColor.withOpacity(0.12),
-                                  borderRadius: BorderRadius.circular(12),
+                          if (esEvaluable)
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  entregado
+                                      ? Icons.check_circle
+                                      : (vencido ? Icons.assignment_late : Icons.hourglass_empty),
+                                  size: 13,
+                                  color: estadoColor,
                                 ),
-                                child: Text(
-                                  'Faltan $restante',
-                                  style: TextStyle(color: badgeColor, fontSize: 12, fontWeight: FontWeight.w600),
+                                const SizedBox(width: 4),
+                                Text(
+                                  entregado
+                                      ? 'Entregado'
+                                      : (estado == null && _estadoEnCarga.contains(key)
+                                          ? 'Verificando…'
+                                          : 'Pendiente'),
+                                  style: TextStyle(color: estadoColor, fontSize: 11, fontWeight: FontWeight.w600),
                                 ),
+                              ],
+                            ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(vencido ? Icons.lock_clock : Icons.schedule, size: 13, color: badgeColor),
+                              const SizedBox(width: 4),
+                              Text(
+                                vencido ? 'Cerrado $horaCierre' : 'Cierra $horaCierre',
+                                style: TextStyle(color: badgeColor, fontSize: 11, fontWeight: FontWeight.w600),
                               ),
-                          ],
-                        ),
+                            ],
+                          ),
+                          if (!vencido && restante.isNotEmpty)
+                            Text(
+                              'Faltan $restante',
+                              style: TextStyle(color: badgeColor.withValues(alpha: 0.9), fontSize: 11, fontWeight: FontWeight.w500),
+                            ),
+                        ],
                       ),
+                    ],
                   ],
                 ),
                 onTap: () => _openActividad(act),
-                trailing: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: color.withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        act['tipo'] == 'assign' ? 'Tarea' : 'Quiz',
-                        style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ],
+                trailing: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    act['tipo'] == 'assign' ? 'Tarea' : 'Quiz',
+                    style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w700),
+                  ),
                 ),
               ),
             ),
@@ -707,12 +881,43 @@ class _CalendarioPageState extends State<CalendarioPage> {
     );
   }
 
-  String _formatFechaCorta(DateTime fecha) {
-    try {
-      return DateFormat('d MMM y', 'es').format(fecha);
-    } catch (_) {
-      return '${fecha.day.toString().padLeft(2, '0')}/${fecha.month.toString().padLeft(2, '0')}/${fecha.year}';
-    }
+  // ====== Calendar custom builders ======
+  Widget _buildDayCircle(DateTime date, Color bg, Color fg, {bool filled = true}) {
+    final String text = DateFormat('d', 'es').format(date);
+    return Center(
+      child: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: filled ? bg : Colors.transparent,
+          shape: BoxShape.circle,
+          border: filled ? null : Border.all(color: fg, width: 1.5),
+        ),
+        alignment: Alignment.center,
+        child: Text(text, style: TextStyle(color: fg, fontWeight: FontWeight.w800, fontSize: 12)),
+      ),
+    );
+  }
+
+  Widget? _buildMarkers(List<dynamic> events) {
+    if (events.isEmpty) return null;
+    // Mostrar hasta 4 puntitos de color según tipo
+    final dots = events.take(4).map((e) {
+      final tipo = (e is Map) ? (e['tipo']?.toString() ?? '') : '';
+      final c = _tipoColor(tipo);
+      return Container(
+        width: 6,
+        height: 6,
+        margin: const EdgeInsets.symmetric(horizontal: 1.5),
+        decoration: BoxDecoration(color: c.withValues(alpha: 0.85), shape: BoxShape.circle),
+      );
+    }).toList();
+    return Positioned(
+      bottom: 3,
+      left: 0,
+      right: 0,
+      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: dots),
+    );
   }
 
   String _formatDuracion(Duration d) {
@@ -731,6 +936,74 @@ class _CalendarioPageState extends State<CalendarioPage> {
     }
     return '${seconds}s';
   }
+
+  // ====== Filtrado, orden y utilidades de vista ======
+
+  List<Map<String, dynamic>> _filtrarYOrdenar(List<Map<String, dynamic>> base) {
+  const q = '';
+    final out = base.where((a) {
+      final matchTipo = _filtroTipos.contains(a['tipo']);
+      final matchCurso = _cursoFiltro == -1 || (a['courseid'] is int && a['courseid'] == _cursoFiltro);
+      final matchSearch = q.isEmpty ||
+          (a['nombre']?.toString().toLowerCase().contains(q) == true) ||
+          (a['curso']?.toString().toLowerCase().contains(q) == true);
+      return matchTipo && matchCurso && matchSearch;
+    }).toList();
+
+    out.sort((a, b) {
+      final ar = _urgencyRankFor(a);
+      final br = _urgencyRankFor(b);
+      if (ar != br) return ar.compareTo(br);
+      final DateTime ad = (a['fechaCierre'] as DateTime?) ?? (a['fechaInicio'] as DateTime);
+      final DateTime bd = (b['fechaCierre'] as DateTime?) ?? (b['fechaInicio'] as DateTime);
+      return ad.compareTo(bd);
+    });
+    return out;
+  }
+
+  int _urgencyRankFor(Map<String, dynamic> act) {
+    final now = DateTime.now();
+    final cierre = (act['fechaCierre'] as DateTime?) ?? (act['fechaInicio'] as DateTime?);
+    int baseRank = 99; // por defecto lejos
+    if (cierre != null) {
+      if (cierre.isBefore(now)) {
+        baseRank = 0; // atrasada
+      } else if (_isSameDay(cierre, now)) {
+        baseRank = 1; // vence hoy
+      } else if (cierre.difference(now) <= const Duration(hours: 24)) {
+        baseRank = 2; // en 24h
+      } else {
+        baseRank = 3; // posterior
+      }
+    }
+    // Si ya está entregada, bájala en prioridad (suma offset)
+    final key = _makeKey(act);
+    final delivered = _estadoEntregaCache[key] == 'entregado';
+    if (delivered) baseRank += 10;
+    return baseRank;
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
+
+  _Urgency _urgencyInfo(DateTime? cierre) {
+    final now = DateTime.now();
+    if (cierre == null) return const _Urgency(99, null, Colors.grey);
+    if (cierre.isBefore(now)) return const _Urgency(0, 'Atrasada', Colors.red);
+    if (_isSameDay(cierre, now)) return const _Urgency(1, 'Vence hoy', Colors.deepOrange);
+    if (cierre.difference(now) <= const Duration(hours: 24)) {
+      return const _Urgency(2, 'En 24h', Colors.amber);
+    }
+    return const _Urgency(3, null, Colors.grey);
+  }
+
+  
+
+  String _shorten(String s, int max) {
+    if (s.length <= max) return s;
+  return '${s.substring(0, max - 1)}…';
+  }
+
+  
 
   void _openActividad(Map<String, dynamic> act) {
     final String base = 'https://savio.utb.edu.co';
@@ -869,5 +1142,90 @@ class _CalendarioPageState extends State<CalendarioPage> {
         ),
       ),
     );
+  }
+
+  // ====== Estados de entrega (lazy) ======
+  Future<void> _ensureEstadoEntrega(Map<String, dynamic> act, String key) async {
+    if (_estadoEntregaCache.containsKey(key)) return;
+    if (_estadoEnCarga.contains(key)) return;
+    if (!(act['tipo'] == 'assign' || act['tipo'] == 'quiz')) return;
+    final int? instance = act['instance'] is num
+        ? (act['instance'] as num).toInt()
+        : int.tryParse('${act['instance'] ?? ''}');
+    if (instance == null) return;
+    _estadoEnCarga.add(key);
+    // Disparar en microtask para no bloquear el build
+    scheduleMicrotask(() async {
+      try {
+        final token = await _getValidToken();
+        if (token == null) return;
+        bool delivered = false;
+        if (act['tipo'] == 'assign') {
+          delivered = await _isAssignmentSubmitted(token, instance);
+        } else if (act['tipo'] == 'quiz') {
+          delivered = await _isQuizFinished(token, instance);
+        }
+        _estadoEntregaCache[key] = delivered ? 'entregado' : 'pendiente';
+      } catch (_) {
+        // Si falla, marcar como pendiente por defecto para no bloquear UX
+        _estadoEntregaCache[key] = 'pendiente';
+      } finally {
+        _estadoEnCarga.remove(key);
+        if (mounted) setState(() {});
+      }
+    });
+  }
+
+  Future<String?> _getValidToken() async {
+    String? token = UserSession.accessToken;
+    if (token == null || token == 'webview-session') {
+      final cookie = UserSession.moodleCookie;
+      if (cookie == null) return null;
+      final t = await fetchMoodleMobileToken(cookie);
+      if (t != null) {
+        UserSession.accessToken = t;
+        token = t;
+      }
+    }
+    return token;
+  }
+
+  Future<bool> _isAssignmentSubmitted(String token, int assignId) async {
+    const base = 'https://savio.utb.edu.co/webservice/rest/server.php';
+    final q = 'wstoken=$token&wsfunction=mod_assign_get_submission_status&moodlewsrestformat=json&assignid=$assignId';
+    try {
+      final r = await http.get(Uri.parse('$base?$q'));
+      if (r.statusCode != 200) return false;
+      final d = json.decode(r.body);
+      if (d is Map && (d['exception'] != null || d['error'] != null)) return false;
+      final lastAttempt = (d is Map) ? (d['lastattempt'] as Map?) : null;
+      final submission = lastAttempt != null ? (lastAttempt['submission'] as Map?) : null;
+      final status = (submission?['status'] ?? '').toString();
+      // Estados posibles: 'new', 'reopened', 'submitted'...
+      return status == 'submitted';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _isQuizFinished(String token, int quizId) async {
+    const base = 'https://savio.utb.edu.co/webservice/rest/server.php';
+    final q = 'wstoken=$token&wsfunction=mod_quiz_get_user_attempts&moodlewsrestformat=json&quizid=$quizId&status=all';
+    try {
+      final r = await http.get(Uri.parse('$base?$q'));
+      if (r.statusCode != 200) return false;
+      final d = json.decode(r.body);
+      if (d is Map && (d['exception'] != null || d['error'] != null)) return false;
+      final attempts = (d['attempts'] as List?) ?? const [];
+      for (final a in attempts) {
+        if (a is Map) {
+          final state = (a['state'] ?? '').toString().toLowerCase();
+          if (state == 'finished') return true; // intento enviado/finalizado
+        }
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 }
