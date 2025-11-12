@@ -555,7 +555,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     final isDark = theme.brightness == Brightness.dark;
     return Scaffold(
       appBar: AppBar(title: const Text('Calendario de Actividades')),
-      body: Container(
+  body: Container(
         // Fondo adaptado al tema (suave degradado en claro, sólido en oscuro)
         decoration: BoxDecoration(
           gradient: isDark
@@ -565,7 +565,8 @@ class _CalendarioPageState extends State<CalendarioPage> {
                   end: Alignment.bottomCenter,
                   colors: [Color(0xFFF4F1FF), Color(0xFFFFFFFF)],
                 ),
-          color: isDark ? theme.colorScheme.background : null,
+          // Preferir surface/scaffoldBackgroundColor en lugar de background
+          color: isDark ? theme.colorScheme.surface : null,
         ),
         child: Column(
           children: [

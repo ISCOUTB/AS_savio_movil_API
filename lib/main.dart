@@ -214,8 +214,8 @@ ThemeData _buildDarkTheme() {
       bodyColor: Colors.grey[200],
       displayColor: Colors.grey[100],
     ),
+    // Evitar establecer background explícito si no es necesario; surface/onSurface son suficientes
     colorScheme: scheme.copyWith(
-      background: const Color(0xFF121317),
       surface: const Color(0xFF1F222A),
       onSurface: Colors.grey[200],
     ),
@@ -800,11 +800,13 @@ class MenuPage extends StatelessWidget {
               onTap: () => _openQuickMenu(context),
               child: Container(
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: Theme.of(context).colorScheme.surface,
                   shape: BoxShape.circle,
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
+                      color: (Theme.of(context).brightness == Brightness.dark
+                              ? Colors.black.withValues(alpha: 0.25)
+                              : Colors.black.withValues(alpha: 0.08)),
                       blurRadius: 4,
                       offset: const Offset(0, 2),
                     ),
@@ -845,7 +847,8 @@ class MenuPage extends StatelessWidget {
       ),
       body: Container(
         // Usa el color del tema (claro/oscuro) en vez de forzar gris claro
-        color: Theme.of(context).colorScheme.background,
+        // Preferir scaffoldBackgroundColor/surface en lugar de colorScheme.background
+        color: Theme.of(context).scaffoldBackgroundColor,
         child: LayoutBuilder(
           builder: (context, constraints) {
             // Ajustar el aspect ratio según el alto disponible
@@ -896,14 +899,9 @@ class _MenuGridItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-    Color _darken(Color c, double amount) {
-      amount = amount.clamp(0.0, 1.0);
-      final r = (c.red * (1 - amount)).round();
-      final g = (c.green * (1 - amount)).round();
-      final b = (c.blue * (1 - amount)).round();
-      return Color.fromARGB(c.alpha, r, g, b);
-    }
-    final Color tileColor = isDark ? _darken(color, 0.35) : color;
+    // Evitar acceso directo a canales de color; usar Color.lerp para oscurecer
+    Color darken(Color c, double t) => Color.lerp(c, Colors.black, t) ?? c;
+    final Color tileColor = isDark ? darken(color, 0.35) : color;
     final Color circleBg = isDark ? const Color(0xFF2A2E37) : Colors.white;
     final onSurface = theme.colorScheme.onSurface;
     final isSavio = title.trim().toLowerCase().contains('savio');
@@ -932,18 +930,34 @@ class _MenuGridItem extends StatelessWidget {
               isSavio
                   ? Container(
                       decoration: BoxDecoration(
-                        color: Colors.deepPurple,
                         shape: BoxShape.circle,
+                        gradient: isDark
+                            ? const LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [Color(0xFF3E2E6F), Color(0xFF5B3FA8)],
+                              )
+                            : const LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [Color(0xFF673AB7), Color(0xFF7E57C2)],
+                              ),
                         boxShadow: [
                           BoxShadow(
-                            color: isDark ? Colors.black.withValues(alpha: 0.3) : Colors.black.withValues(alpha: 0.08),
-                            blurRadius: isDark ? 14 : 10,
+                            color: isDark ? Colors.black.withValues(alpha: 0.30) : Colors.black.withValues(alpha: 0.10),
+                            blurRadius: isDark ? 16 : 12,
                             offset: const Offset(0, 4),
+                          ),
+                          BoxShadow(
+                            color: (isDark ? const Color(0xFF5B3FA8) : const Color(0xFF7E57C2)).withValues(alpha: 0.35),
+                            blurRadius: isDark ? 26 : 22,
+                            spreadRadius: -6,
+                            offset: const Offset(0, 8),
                           ),
                         ],
                       ),
                       padding: const EdgeInsets.all(18),
-                      child: Icon(Icons.school, size: 40, color: Colors.white),
+                      child: const Icon(Icons.school, size: 40, color: Colors.white),
                     )
                   : Container(
                       decoration: BoxDecoration(
@@ -1064,16 +1078,19 @@ Future<String?> _fetchDisplayName() async {
               future: NotificationService.areNotificationsAllowed(),
               builder: (context, snap) {
                 final notifAllowed = snap.data == true;
+                final theme = Theme.of(context);
+                final isDark = theme.brightness == Brightness.dark;
+                final onSurface70 = theme.colorScheme.onSurface.withValues(alpha: 0.7);
                 return Container(
               width: double.infinity,
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black12,
+                    color: isDark ? Colors.black.withValues(alpha: 0.35) : Colors.black.withValues(alpha: 0.12),
                     blurRadius: 16,
-                    offset: Offset(0, -4),
+                    offset: const Offset(0, -4),
                   ),
                 ],
               ),
@@ -1087,7 +1104,7 @@ Future<String?> _fetchDisplayName() async {
                       height: 5,
                       margin: const EdgeInsets.only(bottom: 16),
                       decoration: BoxDecoration(
-                        color: Colors.grey[300],
+                        color: theme.dividerColor.withValues(alpha: 0.8),
                         borderRadius: BorderRadius.circular(4),
                       ),
                     ),
@@ -1098,13 +1115,15 @@ Future<String?> _fetchDisplayName() async {
                       Center(
                         child: Container(
                           decoration: BoxDecoration(
-                            color: Colors.indigo.shade50,
+                            color: isDark
+                                ? theme.colorScheme.primary.withValues(alpha: 0.15)
+                                : Colors.indigo.shade50,
                             shape: BoxShape.circle,
                           ),
                           padding: const EdgeInsets.all(6),
                           child: CircleAvatar(
                             radius: 28,
-                            backgroundColor: Colors.white,
+                            backgroundColor: theme.colorScheme.surface,
                             child: ClipOval(
                               child: Image.asset(
                                 'assets/images.png',
@@ -1130,24 +1149,20 @@ Future<String?> _fetchDisplayName() async {
                             maxLines: 2,
                             textAlign: TextAlign.center,
                             overflow: TextOverflow.fade,
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.black87,
-                            ),
+                            style: theme.textTheme.titleMedium?.copyWith(fontSize: 18, fontWeight: FontWeight.w700),
                           );
                         },
                       ),
                       const SizedBox(height: 6),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
-                        children: const [
-                          Icon(Icons.verified_user, size: 16, color: Colors.green),
-                          SizedBox(width: 6),
+                        children: [
+                          const Icon(Icons.verified_user, size: 16, color: Colors.green),
+                          const SizedBox(width: 6),
                           Flexible(
                             child: Text(
                               'Sesión Microsoft activa',
-                              style: TextStyle(color: Colors.black54),
+                              style: TextStyle(color: onSurface70),
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
@@ -1156,14 +1171,14 @@ Future<String?> _fetchDisplayName() async {
                     ],
                   ),
                   const SizedBox(height: 16),
-                  Divider(height: 1, color: Colors.grey[200]),
+                  Divider(height: 1, color: theme.dividerColor),
                   const SizedBox(height: 8),
                   // Acciones rápidas
                   if (!notifAllowed)
                     Card(
                       elevation: 0,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      color: Colors.grey[50],
+                      color: theme.cardColor,
                       child: Column(
                         children: [
                           ListTile(

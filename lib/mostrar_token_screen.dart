@@ -60,7 +60,8 @@ class _MostrarTokenScreenState extends State<MostrarTokenScreen> {
       ),
       body: Container(
         width: double.infinity,
-        color: theme.colorScheme.background,
+        // Usar scaffoldBackgroundColor en lugar de colorScheme.background (lint preferente)
+        color: theme.scaffoldBackgroundColor,
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
         child: _loading
             ? Column(
