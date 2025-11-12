@@ -51,15 +51,16 @@ class _MostrarTokenScreenState extends State<MostrarTokenScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final primary = theme.colorScheme.primary;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Token de acceso'),
         centerTitle: true,
-        backgroundColor: Colors.deepPurple,
       ),
       body: Container(
         width: double.infinity,
-        color: Colors.grey[100],
+        color: theme.colorScheme.background,
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
         child: _loading
             ? Column(
@@ -79,12 +80,12 @@ class _MostrarTokenScreenState extends State<MostrarTokenScreen> {
                     width: double.infinity,
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      color: Colors.red[50],
+                      color: theme.colorScheme.error.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(16),
                     ),
                     child: Text(
                       _error!,
-                      style: const TextStyle(color: Colors.red, fontSize: 16),
+                      style: TextStyle(color: theme.colorScheme.error, fontSize: 16),
                       textAlign: TextAlign.center,
                     ),
                   )
@@ -97,49 +98,41 @@ class _MostrarTokenScreenState extends State<MostrarTokenScreen> {
                             width: double.infinity,
                             padding: const EdgeInsets.all(24),
                             decoration: BoxDecoration(
-                              color: Colors.white,
+                              color: theme.cardColor,
                               borderRadius: BorderRadius.circular(20),
                               boxShadow: [
                                 BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.04),
-                                  blurRadius: 8,
+                                  color: theme.brightness == Brightness.dark
+                                      ? Colors.black.withValues(alpha: 0.25)
+                                      : Colors.black.withValues(alpha: 0.04),
+                                  blurRadius: theme.brightness == Brightness.dark ? 12 : 8,
                                   offset: const Offset(0, 4),
                                 ),
                               ],
                             ),
                             child: Column(
                               children: [
-                                const Icon(Icons.vpn_key, size: 48, color: Colors.deepPurple),
+                                Icon(Icons.vpn_key, size: 48, color: primary),
                                 const SizedBox(height: 16),
-                                const Text(
+                                Text(
                                   'Tu token de acceso',
-                                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                                  style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
                                   textAlign: TextAlign.center,
                                 ),
                                 const SizedBox(height: 12),
                                 SelectableText(
                                   '$_token',
-                                  style: const TextStyle(fontSize: 18, color: Colors.black87, fontFamily: 'monospace'),
+                                  style: theme.textTheme.bodyLarge?.copyWith(fontFamily: 'monospace'),
                                   textAlign: TextAlign.center,
                                 ),
                                 const SizedBox(height: 18),
-                                ElevatedButton.icon(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.deepPurple,
+                                FilledButton.icon(
+                                  style: FilledButton.styleFrom(
                                     minimumSize: const Size.fromHeight(48),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                   ),
-                                  icon: const Icon(Icons.copy, color: Colors.white),
-                                  label: const Text(
-                                    'Copiar token',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 16,
-                                    ),
-                                  ),
+                                  icon: const Icon(Icons.copy),
+                                  label: const Text('Copiar token'),
                                   onPressed: () {
                                     Clipboard.setData(ClipboardData(text: _token!));
                                     ScaffoldMessenger.of(context).showSnackBar(

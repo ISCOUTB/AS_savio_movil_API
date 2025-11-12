@@ -551,15 +551,21 @@ class _CalendarioPageState extends State<CalendarioPage> {
 
   final bottomInset = MediaQuery.of(context).viewInsets.bottom;
   final collapseCalendar = bottomInset > 0;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return Scaffold(
       appBar: AppBar(title: const Text('Calendario de Actividades')),
       body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFFF4F1FF), Color(0xFFFFFFFF)],
-          ),
+        // Fondo adaptado al tema (suave degradado en claro, sólido en oscuro)
+        decoration: BoxDecoration(
+          gradient: isDark
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Color(0xFFF4F1FF), Color(0xFFFFFFFF)],
+                ),
+          color: isDark ? theme.colorScheme.background : null,
         ),
         child: Column(
           children: [
@@ -660,8 +666,8 @@ class _CalendarioPageState extends State<CalendarioPage> {
                     height: 40,
                     padding: const EdgeInsets.symmetric(horizontal: 8),
                     decoration: BoxDecoration(
-                      color: Colors.white,
-                      border: Border.all(color: Colors.black12),
+                      color: theme.cardColor,
+                      border: Border.all(color: theme.dividerColor),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: DropdownButtonHideUnderline(
@@ -831,7 +837,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
                       '${act['curso']} • $hora',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 12, color: Colors.black.withValues(alpha: 0.6)),
+                      style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7)),
                     ),
                     if (cierre != null) ...[
                       const SizedBox(height: 4),

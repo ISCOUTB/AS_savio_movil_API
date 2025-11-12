@@ -10,11 +10,16 @@ import 'calendario_page.dart';
 import 'notification_service.dart';
 import 'file_change_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
+import 'moodle_token_service.dart';
+import 'dart:convert';
 import 'package:workmanager/workmanager.dart' as wm;
 import 'dart:io' as io;
 import 'package:flutter/foundation.dart';
-import 'dart:convert';
+// keep single dart:convert import
 import 'actividades_calificaciones_page.dart';
+import 'campus_page.dart';
 
 const MethodChannel sessionChannel = MethodChannel('app/session');
 
@@ -41,6 +46,9 @@ class _AllowInvalidCertHttpOverrides extends io.HttpOverrides {
 class AppConfig {
   static bool allowInvalidCerts = false;
 }
+
+// Tema de la app (claro/oscuro) controlado globalmente
+final ValueNotifier<ThemeMode> appThemeMode = ValueNotifier(ThemeMode.system);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -76,6 +84,19 @@ void main() async {
   }
 
   // iOS: sin tareas periódicas por restricciones; se puede considerar Push Notifications en el futuro.
+  // Cargar preferencia de tema antes de dibujar
+  try {
+    final sp = await SharedPreferences.getInstance();
+    final t = sp.getString('themeMode');
+    if (t == 'dark') {
+      appThemeMode.value = ThemeMode.dark;
+    } else if (t == 'light') {
+      appThemeMode.value = ThemeMode.light;
+    } else {
+      appThemeMode.value = ThemeMode.system;
+    }
+  } catch (_) {}
+
   runApp(const SavioApp());
   // Si la app se abrió por tocar una notificación, procesar el deep link
   final launchPayload = await NotificationService.getLaunchPayload();
@@ -112,30 +133,103 @@ class SavioApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      navigatorKey: appNavigatorKey,
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo),
-      localizationsDelegates: const [
-        GlobalMaterialLocalizations.delegate,
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate,
-      ],
-      supportedLocales: const [
-        Locale('es'),
-        Locale('en'),
-      ],
-      home: const LoginWebViewPage(),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: appThemeMode,
+      builder: (context, mode, _) {
+        return MaterialApp(
+          navigatorKey: appNavigatorKey,
+          debugShowCheckedModeBanner: false,
+          themeMode: mode,
+          theme: _buildLightTheme(),
+          darkTheme: _buildDarkTheme(),
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+            supportedLocales: const [
+            Locale('es'),
+            Locale('en'),
+          ],
+          home: const LoginWebViewPage(),
+        );
+      },
     );
   }
+}
+
+ThemeData _buildLightTheme() {
+  const seed = Colors.indigo;
+  final base = ThemeData(useMaterial3: true, colorSchemeSeed: seed);
+  return base.copyWith(
+    scaffoldBackgroundColor: const Color(0xFFF9F9FC),
+    appBarTheme: base.appBarTheme.copyWith(
+      backgroundColor: const Color(0xFFFDFDFE),
+      elevation: 0,
+      centerTitle: false,
+      titleTextStyle: const TextStyle(
+        fontSize: 20,
+        fontWeight: FontWeight.w600,
+        color: Colors.black,
+      ),
+    ),
+    cardTheme: base.cardTheme.copyWith(
+      elevation: 2,
+      surfaceTintColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    ),
+    navigationBarTheme: base.navigationBarTheme.copyWith(
+      backgroundColor: Colors.white,
+    ),
+  );
+}
+
+ThemeData _buildDarkTheme() {
+  const seed = Colors.indigo;
+  final base = ThemeData(useMaterial3: true, colorSchemeSeed: seed, brightness: Brightness.dark);
+  final scheme = base.colorScheme;
+  return base.copyWith(
+    scaffoldBackgroundColor: const Color(0xFF121317),
+    appBarTheme: base.appBarTheme.copyWith(
+      backgroundColor: const Color(0xFF181A20),
+      elevation: 0,
+      titleTextStyle: const TextStyle(
+        fontSize: 20,
+        fontWeight: FontWeight.w600,
+        color: Colors.white,
+      ),
+    ),
+    cardTheme: base.cardTheme.copyWith(
+      elevation: 4,
+      surfaceTintColor: Colors.transparent,
+      color: const Color(0xFF1F222A),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    ),
+    dividerColor: Colors.grey.shade800,
+    snackBarTheme: base.snackBarTheme.copyWith(
+      backgroundColor: const Color(0xFF242832),
+      contentTextStyle: const TextStyle(color: Colors.white),
+    ),
+    textTheme: base.textTheme.apply(
+      bodyColor: Colors.grey[200],
+      displayColor: Colors.grey[100],
+    ),
+    colorScheme: scheme.copyWith(
+      background: const Color(0xFF121317),
+      surface: const Color(0xFF1F222A),
+      onSurface: Colors.grey[200],
+    ),
+  );
 }
 
 class UserSession {
   static String? accessToken;
   static String? moodleCookie;
+  static String? displayName; // nombre completo del usuario
   static void clear() {
     accessToken = null;
     moodleCookie = null;
+    displayName = null;
   }
 }
 
@@ -471,6 +565,9 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
 class MenuPage extends StatelessWidget {
   const MenuPage({super.key});
 
+  // Clave para abrir el Drawer desde el logo, sin mostrar el ícono hamburguesa
+  static final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
   @override
   Widget build(BuildContext context) {
 
@@ -546,9 +643,24 @@ class MenuPage extends StatelessWidget {
           );
         },
       ),
+      // 6. Campus (mapa + leyenda)
+      _MenuGridItem(
+        color: Colors.lightBlue.shade100,
+        icon: Icons.map,
+        iconColor: Colors.lightBlue.shade700,
+        title: 'Campus',
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const CampusPage(),
+            ),
+          );
+        },
+      ),
     ];
 
     return Scaffold(
+      key: MenuPage._scaffoldKey,
       drawer: Drawer(
         child: SafeArea(
           child: ListView(
@@ -556,7 +668,9 @@ class MenuPage extends StatelessWidget {
             children: [
               DrawerHeader(
                 decoration: BoxDecoration(
-                  color: Colors.indigo.shade50,
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? const Color(0xFF1F222A)
+                      : Colors.indigo.shade50,
                 ),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -578,6 +692,25 @@ class MenuPage extends StatelessWidget {
                     ),
                   ],
                 ),
+              ),
+              // Modo oscuro: interruptor
+              ValueListenableBuilder<ThemeMode>(
+                valueListenable: appThemeMode,
+                builder: (context, mode, _) {
+                  final isDark = mode == ThemeMode.dark;
+                  return SwitchListTile.adaptive(
+                    secondary: Icon(isDark ? Icons.dark_mode : Icons.light_mode),
+                    title: const Text('Modo oscuro'),
+                    value: isDark,
+                    onChanged: (v) async {
+                      appThemeMode.value = v ? ThemeMode.dark : ThemeMode.light;
+                      try {
+                        final sp = await SharedPreferences.getInstance();
+                        await sp.setString('themeMode', v ? 'dark' : 'light');
+                      } catch (_) {}
+                    },
+                  );
+                },
               ),
               ListTile(
                 leading: const Icon(Icons.list_alt),
@@ -659,27 +792,32 @@ class MenuPage extends StatelessWidget {
         ),
       ),
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         title: Row(
           children: [
-            Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.08),
-                    blurRadius: 4,
-                    offset: const Offset(0, 2),
+            InkWell(
+              borderRadius: BorderRadius.circular(24),
+              onTap: () => _openQuickMenu(context),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.08),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                padding: const EdgeInsets.all(4),
+                child: ClipOval(
+                  child: Image.asset(
+                    'assets/images.png',
+                    height: 32,
+                    width: 32,
+                    fit: BoxFit.cover,
                   ),
-                ],
-              ),
-              padding: const EdgeInsets.all(4),
-              child: ClipOval(
-                child: Image.asset(
-                  'assets/images.png',
-                  height: 32,
-                  width: 32,
-                  fit: BoxFit.cover,
                 ),
               ),
             ),
@@ -706,7 +844,8 @@ class MenuPage extends StatelessWidget {
         ],
       ),
       body: Container(
-  color: Colors.grey[50],
+        // Usa el color del tema (claro/oscuro) en vez de forzar gris claro
+        color: Theme.of(context).colorScheme.background,
         child: LayoutBuilder(
           builder: (context, constraints) {
             // Ajustar el aspect ratio según el alto disponible
@@ -732,6 +871,11 @@ class MenuPage extends StatelessWidget {
       );
     }
   }
+
+  // Abrir el panel lateral (Drawer) desde el logo
+  void _openQuickMenu(BuildContext context) {
+    MenuPage._scaffoldKey.currentState?.openDrawer();
+  }
   
 class _MenuGridItem extends StatelessWidget {
   final Color color;
@@ -750,6 +894,18 @@ class _MenuGridItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    Color _darken(Color c, double amount) {
+      amount = amount.clamp(0.0, 1.0);
+      final r = (c.red * (1 - amount)).round();
+      final g = (c.green * (1 - amount)).round();
+      final b = (c.blue * (1 - amount)).round();
+      return Color.fromARGB(c.alpha, r, g, b);
+    }
+    final Color tileColor = isDark ? _darken(color, 0.35) : color;
+    final Color circleBg = isDark ? const Color(0xFF2A2E37) : Colors.white;
+    final onSurface = theme.colorScheme.onSurface;
     final isSavio = title.trim().toLowerCase().contains('savio');
     return Material(
       color: Colors.transparent,
@@ -758,12 +914,12 @@ class _MenuGridItem extends StatelessWidget {
         onTap: onTap,
         child: Container(
           decoration: BoxDecoration(
-            color: color,
+            color: tileColor,
             borderRadius: BorderRadius.circular(22),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.04),
-                blurRadius: 8,
+                color: isDark ? Colors.black.withValues(alpha: 0.25) : Colors.black.withValues(alpha: 0.06),
+                blurRadius: isDark ? 12 : 8,
                 offset: const Offset(0, 4),
               ),
             ],
@@ -780,8 +936,8 @@ class _MenuGridItem extends StatelessWidget {
                         shape: BoxShape.circle,
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.08),
-                            blurRadius: 10,
+                            color: isDark ? Colors.black.withValues(alpha: 0.3) : Colors.black.withValues(alpha: 0.08),
+                            blurRadius: isDark ? 14 : 10,
                             offset: const Offset(0, 4),
                           ),
                         ],
@@ -791,12 +947,12 @@ class _MenuGridItem extends StatelessWidget {
                     )
                   : Container(
                       decoration: BoxDecoration(
-                        color: Colors.white,
+                        color: circleBg,
                         shape: BoxShape.circle,
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.06),
-                            blurRadius: 8,
+                            color: isDark ? Colors.black.withValues(alpha: 0.3) : Colors.black.withValues(alpha: 0.06),
+                            blurRadius: isDark ? 12 : 8,
                             offset: const Offset(0, 4),
                           ),
                         ],
@@ -807,10 +963,10 @@ class _MenuGridItem extends StatelessWidget {
               const SizedBox(height: 12),
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
-                  color: Colors.black87,
+                  color: onSurface,
                 ),
                 textAlign: TextAlign.center,
                 maxLines: 2,
@@ -850,6 +1006,45 @@ void _onNotificationTap(String payload) {
     }
   } catch (_) {
     // ignore malformed payloads
+  }
+}
+
+// Obtiene el nombre visible del usuario desde una llamada ligera si se dispone de cookie Moodle.
+Future<String?> _fetchDisplayName() async {
+  // Si ya lo tenemos cacheado
+  if (UserSession.displayName != null && UserSession.displayName!.isNotEmpty) {
+    return UserSession.displayName;
+  }
+  final cookie = UserSession.moodleCookie;
+  if (cookie == null || cookie.isEmpty) return null;
+  // Obtener token Moodle (mobile) usando el cookie
+  try {
+    final token = await fetchMoodleMobileToken(cookie);
+    if (token == null || token.isEmpty) return null;
+    // Llamar core_webservice_get_site_info para fullname
+    final base = 'https://savio.utb.edu.co/webservice/rest/server.php';
+    final url = '$base?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
+    http.Client client;
+    if (AppConfig.allowInvalidCerts) {
+      final raw = io.HttpClient()
+        ..badCertificateCallback = (cert, host, port) => host == 'savio.utb.edu.co';
+      client = IOClient(raw);
+    } else {
+      client = http.Client();
+    }
+    final r = await client.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+    if (r.statusCode != 200) return null;
+    final data = json.decode(r.body);
+    if (data is Map && data['fullname'] is String) {
+      final name = (data['fullname'] as String).trim();
+      if (name.isNotEmpty) {
+        UserSession.displayName = name;
+        return name;
+      }
+    }
+    return null;
+  } catch (_) {
+    return null;
   }
 }
 
@@ -897,45 +1092,66 @@ void _onNotificationTap(String payload) {
                       ),
                     ),
                   ),
-                  Row(
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Colors.indigo.shade50,
-                          shape: BoxShape.circle,
-                        ),
-                        padding: const EdgeInsets.all(6),
-                        child: CircleAvatar(
-                          radius: 28,
-                          backgroundColor: Colors.white,
-                          child: ClipOval(
-                            child: Image.asset(
-                              'assets/images.png',
-                              width: 48,
-                              height: 48,
-                              fit: BoxFit.contain,
+                      Center(
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.indigo.shade50,
+                            shape: BoxShape.circle,
+                          ),
+                          padding: const EdgeInsets.all(6),
+                          child: CircleAvatar(
+                            radius: 28,
+                            backgroundColor: Colors.white,
+                            child: ClipOval(
+                              child: Image.asset(
+                                'assets/images.png',
+                                width: 48,
+                                height: 48,
+                                fit: BoxFit.contain,
+                              ),
                             ),
                           ),
                         ),
                       ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Tu sesión',
-                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                      const SizedBox(height: 10),
+                      // Nombre centrado y en dos líneas para permitir nombres largos completos
+                      FutureBuilder<String?>(
+                        future: _fetchDisplayName(),
+                        builder: (context, snapName) {
+                          final name = snapName.data;
+                          if (name == null || name.isEmpty) {
+                            return const SizedBox.shrink();
+                          }
+                          return Text(
+                            name,
+                            maxLines: 2,
+                            textAlign: TextAlign.center,
+                            overflow: TextOverflow.fade,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.black87,
                             ),
-                            Row(
-                              children: const [
-                                Icon(Icons.verified_user, size: 16, color: Colors.green),
-                                SizedBox(width: 6),
-                                Text('Sesión Microsoft activa', style: TextStyle(color: Colors.black54)),
-                              ],
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.verified_user, size: 16, color: Colors.green),
+                          SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              'Sesión Microsoft activa',
+                              style: TextStyle(color: Colors.black54),
+                              overflow: TextOverflow.ellipsis,
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
