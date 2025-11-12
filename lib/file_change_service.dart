@@ -7,6 +7,7 @@ import 'package:http/io_client.dart';
 import 'package:flutter/foundation.dart';
 import 'notification_service.dart';
 import 'moodle_token_service.dart';
+import 'course_filters.dart';
 import 'main.dart';
 
 class FileChangeService {
@@ -77,7 +78,8 @@ class FileChangeService {
             : const [];
     final nombresPorId = <int, String>{};
     final ids = <int>[];
-    for (final c in cursos) {
+    // Filtrar cursos vigentes para evitar notificaciones de semestres antiguos
+    for (final c in cursos.whereType<Map>().where((m) => CourseFilters.isCurrentCourse(m))) {
       try {
         final id = (c['id'] as num?)?.toInt() ?? 0;
         if (id > 0) {

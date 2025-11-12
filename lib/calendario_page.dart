@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'moodle_token_service.dart';
 import 'savio_webview_page.dart';
 import 'notification_service.dart';
+import 'course_filters.dart';
 
 // Urgency helper for badges and sorting
 class _Urgency {
@@ -256,7 +257,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     if (decodedCursos is Map && (decodedCursos.containsKey('exception') || decodedCursos.containsKey('error'))) {
       throw 'Error de Moodle: ${decodedCursos['message'] ?? decodedCursos['error'] ?? decodedCursos.toString()}';
     }
-    List cursos;
+  List cursos;
     if (decodedCursos is List) {
       cursos = decodedCursos;
     } else if (decodedCursos is Map && decodedCursos.containsKey('courses')) {
@@ -264,10 +265,14 @@ class _CalendarioPageState extends State<CalendarioPage> {
     } else {
       throw 'Respuesta inesperada al obtener cursos: ${decodedCursos.toString()}';
     }
-    // Lote de eventos
+    // Filtrar a cursos vigentes del semestre actual (heurística por fechas/estado)
+  // Nota: filtrado ahora usa CourseFilters y no requiere nowSec local
+    final cursosVigentes = cursos.whereType<Map>().where((c) => CourseFilters.isCurrentCourse(c)).toList();
+
+    // Lote de eventos solo de cursos vigentes
     final ids = <int>[];
     final nombresPorId = <int, String>{};
-    for (var curso in cursos) {
+    for (var curso in cursosVigentes) {
       final cid = (curso['id'] as num).toInt();
       ids.add(cid);
       nombresPorId[cid] = (curso['fullname'] ?? '').toString();

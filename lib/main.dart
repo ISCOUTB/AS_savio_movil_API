@@ -479,8 +479,8 @@ class MenuPage extends StatelessWidget {
       // 1. Actividades (PRIORIDAD: primero en el grid)
       _MenuGridItem(
         color: Colors.green.shade300,
-        icon: Icons.list_alt,
-        iconColor: Colors.white,
+        icon: Icons.event_note, // Icono más reconocible para actividades
+        iconColor: Colors.green.shade700, // Contraste: antes blanco sobre fondo blanco se veía vacío
         title: 'Actividades',
         onTap: () {
           Navigator.of(context).push(
