@@ -1,6 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+import 'dart:io';
+import 'package:http/io_client.dart';
+import 'package:flutter/foundation.dart';
 import 'notification_service.dart';
 import 'moodle_token_service.dart';
 import 'main.dart';
@@ -15,6 +19,8 @@ class FileChangeService {
     if (_running) return;
     _running = true;
     _timer?.cancel();
+    // Cargar índice persistido (si existe) para evitar duplicados entre isolates
+    _loadPersistedIndex();
     // Hacer un chequeo inicial al minuto para no golpear al inicio
     _timer = Timer.periodic(interval, (_) async {
       try {
@@ -39,9 +45,20 @@ class FileChangeService {
     if (token == null) return;
     const base = 'https://savio.utb.edu.co/webservice/rest/server.php';
 
+    // Cliente HTTP local: en debug permite certificado del host savio.utb.edu.co
+    http.Client client = http.Client();
+    if (kDebugMode) {
+      try { client.close(); } catch (_) {}
+      final ioHttp = HttpClient()
+        ..badCertificateCallback = (X509Certificate cert, String host, int port) {
+          return host == 'savio.utb.edu.co';
+        };
+      client = IOClient(ioHttp);
+    }
+
     // 1) site info -> userid
     final siteInfoUrl = '$base?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
-    final rSite = await http.get(Uri.parse(siteInfoUrl));
+  final rSite = await client.get(Uri.parse(siteInfoUrl));
     if (rSite.statusCode != 200) return;
     final dSite = json.decode(rSite.body);
     if (dSite is Map && (dSite['exception'] != null || dSite['error'] != null)) return;
@@ -50,7 +67,7 @@ class FileChangeService {
 
     // 2) cursos del usuario
     final cursosUrl = '$base?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
-    final rCursos = await http.get(Uri.parse(cursosUrl));
+  final rCursos = await client.get(Uri.parse(cursosUrl));
     if (rCursos.statusCode != 200) return;
     final dCursos = json.decode(rCursos.body);
     final List cursos = (dCursos is List)
@@ -78,7 +95,7 @@ class FileChangeService {
       for (final cid in part) {
         try {
           final q = '$base?wstoken=$token&wsfunction=core_course_get_contents&moodlewsrestformat=json&courseid=$cid';
-          final r = await http.get(Uri.parse(q));
+          final r = await client.get(Uri.parse(q));
           if (r.statusCode != 200) continue;
           final data = json.decode(r.body);
           if (data is! List) continue;
@@ -167,6 +184,34 @@ class FileChangeService {
     }
 
     _lastIndex = nuevoIndex;
+    // Persistir el índice para compartir estado con el isolate de background
+    try {
+      await _savePersistedIndex(_lastIndex);
+    } catch (_) {}
+
+    try {
+      client.close();
+    } catch (_) {}
+  }
+
+  static const String _prefsKey = 'file_change_index_v1';
+
+  static Future<void> _savePersistedIndex(Map<String, int> idx) async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_prefsKey, json.encode(idx));
+    } catch (_) {}
+  }
+
+  static Future<void> _loadPersistedIndex() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final s = sp.getString(_prefsKey);
+      if (s != null && s.isNotEmpty) {
+        final m = json.decode(s) as Map<String, dynamic>;
+        _lastIndex = m.map((k, v) => MapEntry(k, (v is num) ? v.toInt() : int.tryParse('$v') ?? 0));
+      }
+    } catch (_) {}
   }
 
   static List<List<T>> _chunk<T>(List<T> list, int size) {

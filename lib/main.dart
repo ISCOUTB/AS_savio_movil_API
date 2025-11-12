@@ -11,8 +11,10 @@ import 'notification_service.dart';
 import 'file_change_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart' as wm;
-import 'dart:io' show Platform;
+import 'dart:io' as io;
+import 'package:flutter/foundation.dart';
 import 'dart:convert';
+import 'actividades_calificaciones_page.dart';
 
 const MethodChannel sessionChannel = MethodChannel('app/session');
 
@@ -22,15 +24,39 @@ Future<void> clearCookiesNative() async {
   } catch (_) {}
 }
 
+// Development helper: allow invalid/self-signed certs for specific host when
+// running in debug or when explicitly enabled via --dart-define=ALLOW_INVALID_CERTS=true
+class _AllowInvalidCertHttpOverrides extends io.HttpOverrides {
+  final bool allow;
+  _AllowInvalidCertHttpOverrides({this.allow = false});
+
+  @override
+  io.HttpClient createHttpClient(io.SecurityContext? context) {
+    final client = super.createHttpClient(context);
+    client.badCertificateCallback = (io.X509Certificate cert, String host, int port) => allow && host == 'savio.utb.edu.co';
+    return client;
+  }
+}
+
+class AppConfig {
+  static bool allowInvalidCerts = false;
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Activar override de certificados inválidos en modo debug o si se pasa
+  // --dart-define=ALLOW_INVALID_CERTS=true al compilar/ejecutar.
+  final allowInvalid = kDebugMode || (const String.fromEnvironment('ALLOW_INVALID_CERTS', defaultValue: 'false') == 'true');
+  io.HttpOverrides.global = _AllowInvalidCertHttpOverrides(allow: allowInvalid);
+  // Exponer flag a otras pantallas sin recalcular
+  AppConfig.allowInvalidCerts = allowInvalid;
   await initializeDateFormatting('es');
   await NotificationService.init(onSelect: _onNotificationTap);
   await NotificationService.requestPermissionsIfNeeded();
   // Iniciar verificación de cambios en archivos (nuevo/actualizado/eliminado)
   FileChangeService.start();
   // Android: Workmanager para tareas periódicas en segundo plano
-  if (Platform.isAndroid) {
+  if (io.Platform.isAndroid) {
     await wm.Workmanager().initialize(
       _backgroundDispatcher,
       // isInDebugMode is deprecated; remove it and rely on default behavior
@@ -450,6 +476,21 @@ class MenuPage extends StatelessWidget {
 
 
     final menuItems = [
+      // 1. Actividades (PRIORIDAD: primero en el grid)
+      _MenuGridItem(
+        color: Colors.green.shade300,
+        icon: Icons.list_alt,
+        iconColor: Colors.white,
+        title: 'Actividades',
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const ActividadesCalificacionesPage(),
+            ),
+          );
+        },
+      ),
+      // 2. Acceso principal a SAVIO/Moodle
       _MenuGridItem(
         color: Colors.deepPurple.shade200,
         icon: Icons.school,
@@ -463,6 +504,7 @@ class MenuPage extends StatelessWidget {
           );
         },
       ),
+      // 3. Calendario inteligente
       _MenuGridItem(
         color: Colors.deepPurple.shade100,
         icon: Icons.event_available,
@@ -476,6 +518,7 @@ class MenuPage extends StatelessWidget {
           );
         },
       ),
+      // 4. Mostrar token
       _MenuGridItem(
         color: Colors.teal.shade100,
         icon: Icons.vpn_key,
@@ -489,6 +532,7 @@ class MenuPage extends StatelessWidget {
           );
         },
       ),
+      // 5. CalcuNota
       _MenuGridItem(
         color: Colors.pink.shade100,
         icon: Icons.calculate,
@@ -505,6 +549,115 @@ class MenuPage extends StatelessWidget {
     ];
 
     return Scaffold(
+      drawer: Drawer(
+        child: SafeArea(
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              DrawerHeader(
+                decoration: BoxDecoration(
+                  color: Colors.indigo.shade50,
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    ClipOval(
+                      child: Image.asset(
+                        'assets/images.png',
+                        height: 56,
+                        width: 56,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    const Expanded(
+                      child: Text(
+                        'Menú rápido',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.list_alt),
+                title: const Text('Actividades'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const ActividadesCalificacionesPage(),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.school),
+                title: const Text('SAVIO / Moodle'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const SavioWebViewPage(),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.event_available),
+                title: const Text('Calendario'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const CalendarioPage(),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.vpn_key),
+                title: const Text('Mostrar token'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => MostrarTokenScreen(cookie: UserSession.moodleCookie),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.calculate),
+                title: const Text('CalcuNota'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const CalcuNotaWebViewPage(),
+                    ),
+                  );
+                },
+              ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.logout, color: Colors.redAccent),
+                title: const Text('Cerrar sesión'),
+                onTap: () async {
+                  Navigator.of(context).pop();
+                  final nav = Navigator.of(context);
+                  await clearCookiesNative();
+                  UserSession.clear();
+                  nav.pushAndRemoveUntil(
+                    MaterialPageRoute(builder: (_) => const LoginWebViewPage()),
+                    (r) => false,
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
       appBar: AppBar(
         title: Row(
           children: [
@@ -536,6 +689,17 @@ class MenuPage extends StatelessWidget {
         ),
         actions: [
           IconButton(
+            tooltip: 'Actividades',
+            icon: const Icon(Icons.list_alt),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const ActividadesCalificacionesPage(),
+                ),
+              );
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.person),
             onPressed: () => _showProfile(context),
           ),
@@ -564,7 +728,7 @@ class MenuPage extends StatelessWidget {
           },
         ),
       ),
-        floatingActionButton: null,
+        // Se removió el botón flotante de acceso rápido a Actividades por petición.
       );
     }
   }

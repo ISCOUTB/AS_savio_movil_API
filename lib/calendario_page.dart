@@ -2,9 +2,12 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'dart:io';
+import 'package:http/io_client.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:intl/intl.dart';
 import 'main.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'moodle_token_service.dart';
 import 'savio_webview_page.dart';
 import 'notification_service.dart';
@@ -25,6 +28,8 @@ class CalendarioPage extends StatefulWidget {
 }
 
 class _CalendarioPageState extends State<CalendarioPage> {
+  // Inicializamos por defecto para evitar LateInitializationError en casos de hot reload
+  http.Client _client = http.Client();
   bool _loading = true;
   String? _error;
   // Estado y estructura para calendario
@@ -69,13 +74,29 @@ class _CalendarioPageState extends State<CalendarioPage> {
   @override
   void initState() {
     super.initState();
-    _fetchActividades();
+    // Cliente HTTP configurable para permitir cert inválido si AppConfig.allowInvalidCerts == true
+    try { _client.close(); } catch (_) {}
+    if (AppConfig.allowInvalidCerts) {
+      final ioHttp = HttpClient()
+        ..badCertificateCallback = (X509Certificate cert, String host, int port) => host == 'savio.utb.edu.co';
+      _client = IOClient(ioHttp);
+    } else {
+      _client = http.Client();
+    }
+    // Cargar índice persistido y luego arrancar fetch + polling
+    _initAsync();
+  }
+
+  Future<void> _initAsync() async {
+    await _loadPersistedIndex();
+    await _fetchActividades();
     _startPolling();
   }
 
   @override
   void dispose() {
     _pollTimer?.cancel();
+    try { _client.close(); } catch (_) {}
     super.dispose();
   }
 
@@ -99,6 +120,10 @@ class _CalendarioPageState extends State<CalendarioPage> {
       final nuevoIndex = _indexActivities(actividades);
       final cambios = _diffActivities(previous, nuevoIndex);
       _lastIndex = nuevoIndex;
+      // Guardar índice persistido para evitar duplicados cuando otra isolate (background) notifique
+      try {
+        await _savePersistedIndex(_lastIndex);
+      } catch (_) {}
       if (cambios.isNotEmpty) {
         // Notificar hasta 5 cambios por ciclo para evitar spam
         final toNotify = cambios.take(5);
@@ -167,8 +192,13 @@ class _CalendarioPageState extends State<CalendarioPage> {
         _loading = false;
       });
     } catch (e) {
+      String msg = e.toString();
+      // Detectar errores de certificado y dar mensaje más claro
+      if (e is HandshakeException || msg.contains('CERTIFICATE_VERIFY_FAILED') || msg.contains('Handshake error')) {
+        msg = 'Problema con el certificado SSL del servidor. Verifica la configuración del servidor (CERTIFICATE_VERIFY_FAILED).';
+      }
       setState(() {
-        _error = e.toString();
+        _error = msg;
         _loading = false;
       });
     }
@@ -192,13 +222,13 @@ class _CalendarioPageState extends State<CalendarioPage> {
     final url = 'https://savio.utb.edu.co/webservice/rest/server.php';
     // 1) site info -> userid
     final siteInfoUrl = '$url?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
-    final responseSiteInfo = await http.get(Uri.parse(siteInfoUrl));
+  final responseSiteInfo = await _client.get(Uri.parse(siteInfoUrl));
     if (responseSiteInfo.statusCode != 200) throw 'Error al obtener site info';
     var decodedSite = json.decode(responseSiteInfo.body);
     if (decodedSite is Map && (decodedSite.containsKey('exception') || decodedSite.containsKey('error'))) {
       token = await refreshToken();
       final retrySiteInfoUrl = '$url?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
-      final retrySiteInfo = await http.get(Uri.parse(retrySiteInfoUrl));
+  final retrySiteInfo = await _client.get(Uri.parse(retrySiteInfoUrl));
       if (retrySiteInfo.statusCode != 200) throw 'Error al obtener site info';
       decodedSite = json.decode(retrySiteInfo.body);
       if (decodedSite is Map && (decodedSite.containsKey('exception') || decodedSite.containsKey('error'))) {
@@ -210,14 +240,14 @@ class _CalendarioPageState extends State<CalendarioPage> {
 
     // 2) cursos por userid
     final cursosUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
-    var responseCursos = await http.get(Uri.parse(cursosUrl));
+  var responseCursos = await _client.get(Uri.parse(cursosUrl));
     if (responseCursos.statusCode == 200) {
       final dc = json.decode(responseCursos.body);
       if (dc is Map && (dc.containsKey('exception') || dc.containsKey('error'))) {
         if ((dc['error'] ?? '').toString().contains('invalidtoken') || (dc['message'] ?? '').toString().contains('token')) {
           token = await refreshToken();
           final retryUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
-          responseCursos = await http.get(Uri.parse(retryUrl));
+          responseCursos = await _client.get(Uri.parse(retryUrl));
         }
       }
     }
@@ -395,7 +425,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     Future<http.Response> doGet(String query) async {
       final full = '$base?$query';
       debugPrint('GET: $full');
-      return await http.get(Uri.parse(full));
+      return await _client.get(Uri.parse(full));
     }
 
     // Probar por lotes usando events[courseids][i]; si falla por parámetro inválido, reintentar con courseids[i]
@@ -446,7 +476,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     Future<http.Response> doGet(String query) async {
       final full = '$base?$query';
       debugPrint('GET: $full');
-      return await http.get(Uri.parse(full));
+      return await _client.get(Uri.parse(full));
     }
 
     for (final part in _chunk(courseIds, 20)) {
@@ -483,7 +513,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     Future<http.Response> doGet(String query) async {
       final full = '$base?$query';
       debugPrint('GET: $full');
-      return await http.get(Uri.parse(full));
+      return await _client.get(Uri.parse(full));
     }
 
     for (final part in _chunk(courseIds, 20)) {
@@ -1093,7 +1123,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     final base = 'https://savio.utb.edu.co/webservice/rest/server.php';
     final q = 'wstoken=$token&wsfunction=core_course_get_contents&moodlewsrestformat=json&courseid=$courseId';
     final uri = Uri.parse('$base?$q');
-    final r = await http.get(uri);
+  final r = await _client.get(uri);
     if (r.statusCode != 200) return null;
     final d = json.decode(r.body);
     if (d is Map && (d['exception'] != null || d['error'] != null)) return null;
@@ -1194,7 +1224,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     const base = 'https://savio.utb.edu.co/webservice/rest/server.php';
     final q = 'wstoken=$token&wsfunction=mod_assign_get_submission_status&moodlewsrestformat=json&assignid=$assignId';
     try {
-      final r = await http.get(Uri.parse('$base?$q'));
+  final r = await _client.get(Uri.parse('$base?$q'));
       if (r.statusCode != 200) return false;
       final d = json.decode(r.body);
       if (d is Map && (d['exception'] != null || d['error'] != null)) return false;
@@ -1212,7 +1242,7 @@ class _CalendarioPageState extends State<CalendarioPage> {
     const base = 'https://savio.utb.edu.co/webservice/rest/server.php';
     final q = 'wstoken=$token&wsfunction=mod_quiz_get_user_attempts&moodlewsrestformat=json&quizid=$quizId&status=all';
     try {
-      final r = await http.get(Uri.parse('$base?$q'));
+  final r = await _client.get(Uri.parse('$base?$q'));
       if (r.statusCode != 200) return false;
       final d = json.decode(r.body);
       if (d is Map && (d['exception'] != null || d['error'] != null)) return false;
@@ -1227,5 +1257,26 @@ class _CalendarioPageState extends State<CalendarioPage> {
     } catch (_) {
       return false;
     }
+  }
+
+  // Persistencia del índice de actividades para evitar duplicados entre isolates
+  static const String _prefsKeyActivities = 'activities_index_v1';
+
+  Future<void> _savePersistedIndex(Map<String, int> idx) async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_prefsKeyActivities, json.encode(idx));
+    } catch (_) {}
+  }
+
+  Future<void> _loadPersistedIndex() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final s = sp.getString(_prefsKeyActivities);
+      if (s != null && s.isNotEmpty) {
+        final m = json.decode(s) as Map<String, dynamic>;
+        _lastIndex = m.map((k, v) => MapEntry(k, (v is num) ? v.toInt() : int.tryParse('$v') ?? 0));
+      }
+    } catch (_) {}
   }
 }
