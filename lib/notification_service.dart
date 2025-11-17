@@ -1,35 +1,66 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class NotificationService {
-  static final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
+  static final FlutterLocalNotificationsPlugin _plugin =
+      FlutterLocalNotificationsPlugin();
+
   static bool _initialized = false;
   static void Function(String payload)? _onSelect;
+
   // Registro de IDs ya enviados recientemente para evitar duplicados (spam)
   static final Map<int, DateTime> _recentIds = {};
-  // Ventana de tiempo para deduplicación
+
   static Duration dedupWindow = const Duration(minutes: 45);
-  // Modo de prueba: cuando está activo no se llama al plugin real, sólo se contabilizan intentos
+
+
   static bool testing = false;
   static int _debugShowCount = 0;
   static final List<int> _debugShownIds = [];
 
   static Future<void> init({void Function(String payload)? onSelect}) async {
     if (_initialized) return;
+
     _onSelect = onSelect;
-    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    final initSettings = InitializationSettings(android: androidInit);
-    await _plugin.initialize(
-      initSettings,
-      onDidReceiveNotificationResponse: (NotificationResponse response) async {
-        final payload = response.payload;
-        if (payload != null && payload.isNotEmpty) {
-          final cb = _onSelect;
-          if (cb != null) cb(payload);
-        }
-      },
+
+    // Configuración Android
+    const AndroidInitializationSettings androidInit =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+
+    // Configuración iOS (Darwin = iOS/macOS)
+    const DarwinInitializationSettings iosInit = DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+
     );
-    _initialized = true;
+
+    //ambas en InitializationSettings
+    const InitializationSettings initSettings = InitializationSettings(
+      android: androidInit,
+      iOS: iosInit, 
+    );
+
+    try {
+      await _plugin.initialize(
+        initSettings,
+        onDidReceiveNotificationResponse:
+            (NotificationResponse response) async {
+          final payload = response.payload;
+          if (payload != null && payload.isNotEmpty) {
+            final cb = _onSelect;
+            if (cb != null) cb(payload);
+          }
+        },
+      );
+      _initialized = true;
+    } catch (e, st) {
+      if (kDebugMode) {
+        print('Error al inicializar notificaciones locales: $e');
+        print(st);
+      }
+    }
   }
 
   static Future<void> showSimple({
@@ -47,30 +78,32 @@ class NotificationService {
       priority: Priority.high,
     );
     const details = NotificationDetails(android: android);
+
     // Si dedup es true y el id ya fue mostrado dentro del intervalo, no repetir
     if (dedup && id != 0) {
       final now = DateTime.now();
       final last = _recentIds[id];
       if (last != null && now.difference(last) < dedupWindow) {
-        // En modo prueba registramos intento suprimido para poder verificar
+   
         if (testing) {
-          _debugShownIds.add(id); // se agrega igual para analizar secuencia
+          _debugShownIds.add(id); 
         }
-        return; // suprimir duplicado
+        return; 
       }
       _recentIds[id] = now;
-      // Limpiar IDs antiguos para no crecer indefinidamente
+   
       _recentIds.removeWhere((_, ts) => now.difference(ts) > dedupWindow * 2);
     }
+
     if (testing) {
       _debugShowCount++;
       _debugShownIds.add(id);
       return;
     }
+
     await _plugin.show(id, title, body, details, payload: payload);
   }
 
-  // Métodos auxiliares de prueba
   static void testReset() {
     _recentIds.clear();
     _debugShowCount = 0;
@@ -78,22 +111,30 @@ class NotificationService {
   }
 
   static int testNotificationCalls() => _debugShowCount;
-  static List<int> testShownIdSequence() => List.unmodifiable(_debugShownIds);
+
+  static List<int> testShownIdSequence() =>
+      List.unmodifiable(_debugShownIds);
 
   static Future<void> requestPermissionsIfNeeded() async {
-    // On Android 13+ (Tiramisu) notifications require runtime permission.
-    await _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
+    // Android 13+ (Tiramisu) requiere permiso en runtime
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission();
+
   }
 
   static Future<bool> areNotificationsAllowed() async {
-    // Try local_notifications API first
+ 
     final impl = _plugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
     if (impl != null) {
       final allowed = await impl.areNotificationsEnabled();
       if (allowed != null) return allowed;
     }
-    // Fallback to permission_handler (Android 13+ exposes runtime permission)
+
+    // Fallback a permission_handler (Android/iOS)
     final status = await Permission.notification.status;
     return status.isGranted || status.isLimited;
   }

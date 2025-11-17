@@ -58,11 +58,23 @@ void main() async {
   io.HttpOverrides.global = _AllowInvalidCertHttpOverrides(allow: allowInvalid);
   // Exponer flag a otras pantallas sin recalcular
   AppConfig.allowInvalidCerts = allowInvalid;
-  await initializeDateFormatting('es');
-  await NotificationService.init(onSelect: _onNotificationTap);
-  await NotificationService.requestPermissionsIfNeeded();
+    await initializeDateFormatting('es');
+
+  // Inicializar notificaciones con try/catch para que NUNCA tumben la app
+  try {
+    await NotificationService.init(onSelect: _onNotificationTap);
+    await NotificationService.requestPermissionsIfNeeded();
+  } catch (e, st) {
+    if (kDebugMode) {
+      print('Error al inicializar notificaciones: $e');
+      print(st);
+    }
+   
+  }
+
   // Iniciar verificación de cambios en archivos (nuevo/actualizado/eliminado)
   FileChangeService.start();
+
   // Android: Workmanager para tareas periódicas en segundo plano
   if (io.Platform.isAndroid) {
     await wm.Workmanager().initialize(
