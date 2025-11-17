@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:arquisoft/notification_service.dart';
+import 'dart:async';
 
 void main() {
   group('NotificationService dedup', () {
@@ -29,6 +30,20 @@ void main() {
       await NotificationService.showSimple(title: 'A', body: 'B', id: 1);
       await NotificationService.showSimple(title: 'A', body: 'B', id: 2);
       expect(NotificationService.testNotificationCalls(), 2);
+    });
+
+    test('Persistencia básica de dedup (simulada)', () async {
+      // Primera notificación
+      await NotificationService.showSimple(title: 'X', body: 'Y', id: 999);
+      // Simular "reinicio" sin limpiar _recentIds (omitimos testReset)
+      // En modo testing no persiste, así que forzamos ventana corta y repetimos inmediatamente.
+      await NotificationService.showSimple(title: 'X', body: 'Y', id: 999);
+      expect(NotificationService.testNotificationCalls(), 1, reason: 'Debe seguir deduplicando en la misma sesión');
+      // Esperar más allá de la ventana y reemitir
+      NotificationService.dedupWindow = const Duration(milliseconds: 5);
+      await Future.delayed(const Duration(milliseconds: 8));
+      await NotificationService.showSimple(title: 'X', body: 'Y', id: 999);
+      expect(NotificationService.testNotificationCalls(), 2, reason: 'Debe permitir tras ventana caducada');
     });
   });
 }

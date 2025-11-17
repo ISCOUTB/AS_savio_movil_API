@@ -1,5 +1,7 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
@@ -29,6 +31,27 @@ class NotificationService {
         }
       },
     );
+    // Cargar deduplicación persistente (timestamps) para evitar spam tras reinicios.
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final raw = sp.getString('notif_recent_ids_v1');
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = json.decode(raw);
+        if (decoded is Map) {
+          for (final e in decoded.entries) {
+            final k = int.tryParse(e.key.toString());
+            final v = (e.value is num) ? (e.value as num).toInt() : int.tryParse('${e.value ?? ''}');
+            if (k != null && v != null) {
+              final ts = DateTime.fromMillisecondsSinceEpoch(v, isUtc: true).toLocal();
+              // Sólo mantener si sigue dentro de una ventana razonable (por defecto 2x dedupWindow)
+              if (DateTime.now().difference(ts) < dedupWindow * 2) {
+                _recentIds[k] = ts;
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
     _initialized = true;
   }
 
@@ -61,6 +84,14 @@ class NotificationService {
       _recentIds[id] = now;
       // Limpiar IDs antiguos para no crecer indefinidamente
       _recentIds.removeWhere((_, ts) => now.difference(ts) > dedupWindow * 2);
+      // Persistir timestamps para consistencia entre reinicios e isolates
+      if (!testing) {
+        try {
+          final sp = await SharedPreferences.getInstance();
+          final serializable = _recentIds.map((k, v) => MapEntry(k.toString(), v.toUtc().millisecondsSinceEpoch));
+          await sp.setString('notif_recent_ids_v1', json.encode(serializable));
+        } catch (_) {}
+      }
     }
     if (testing) {
       _debugShowCount++;

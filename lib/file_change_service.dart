@@ -12,7 +12,9 @@ import 'main.dart';
 
 class FileChangeService {
   static Timer? _timer;
-  static Map<String, int> _lastIndex = {}; // key: resource|courseid|cmid -> lastModified
+  static Map<String, int> _lastIndex = {}; // key: module|courseid|cmid -> lastModified
+  // Conjunto de claves (module|courseid|cmid) ya notificadas, persistente para evitar duplicados.
+  static final Set<String> _notifiedKeys = <String>{};
   static bool _running = false;
   static const String taskName = 'savio_file_check';
 
@@ -22,6 +24,7 @@ class FileChangeService {
     _timer?.cancel();
     // Cargar índice persistido (si existe) para evitar duplicados entre isolates
     _loadPersistedIndex();
+    _loadPersistedNotified();
     // Hacer un chequeo inicial al minuto para no golpear al inicio
     _timer = Timer.periodic(interval, (_) async {
       try {
@@ -90,7 +93,9 @@ class FileChangeService {
     }
     if (ids.isEmpty) return;
 
-    // 3) obtener contenidos por curso y extraer recursos (mod_resource)
+    // 3) obtener contenidos por curso y extraer módulos de interés (actividades nuevas)
+    // Se limita a tipos que representan nuevas actividades: asignaciones, foros, quizzes y recursos.
+    const watchedMods = {'assign', 'forum', 'quiz', 'resource'};
     final nuevoIndex = <String, int>{};
     int notifications = 0;
     for (final part in _chunk(ids, 8)) { // limitar concurrencia
@@ -106,7 +111,7 @@ class FileChangeService {
             for (final m in mods) {
               if (m is! Map) continue;
               final modname = (m['modname'] ?? '').toString();
-              if (modname != 'resource') continue; // Solo archivos de curso
+              if (!watchedMods.contains(modname)) continue; // sólo módulos vigilados
               final cmid = (m['id'] is num) ? (m['id'] as num).toInt() : int.tryParse('${m['id'] ?? ''}') ?? 0;
               if (cmid == 0) continue;
               final moduleModified = (m['timemodified'] is num) ? (m['timemodified'] as num).toInt() : 0;
@@ -119,7 +124,7 @@ class FileChangeService {
                 }
               }
               final lastMod = (filesModified > 0) ? filesModified : moduleModified;
-              final key = 'resource|$cid|$cmid';
+              final key = '$modname|$cid|$cmid';
               nuevoIndex[key] = lastMod;
             }
           }
@@ -127,68 +132,61 @@ class FileChangeService {
       }
     }
 
-    // 4) Diffs: nuevos, editados, eliminados
+    // 4) Notificaciones solo de nuevos módulos (no repetimos ediciones/eliminaciones para reducir ruido)
     final prev = _lastIndex;
     final cursosPorKey = <String, int>{};
     for (final cid in ids) {
       cursosPorKey['$cid'] = cid; // marcador
     }
 
-    // Nuevos y editados
+    final List<Map<String, String>> nuevos = [];
     for (final entry in nuevoIndex.entries) {
       if (notifications >= 5) break;
       final key = entry.key;
-      final newMod = entry.value;
-      if (!prev.containsKey(key)) {
-        // Nuevo archivo
+      if (!prev.containsKey(key) && !_notifiedKeys.contains(key)) {
         final parts = key.split('|');
+        if (parts.length < 3) continue;
+        final modname = parts[0];
         final cid = int.tryParse(parts[1]) ?? 0;
-        final courseName = nombresPorId[cid] ?? 'Curso';
         final cmid = int.tryParse(parts[2]) ?? 0;
-        final url = 'https://savio.utb.edu.co/mod/resource/view.php?id=$cmid';
-        await NotificationService.showSimple(
-          title: '[${_shorten(courseName, 32)}] Nuevo material',
-          body: 'Se ha subido un archivo nuevo',
-          id: key.hashCode & 0x7FFFFFFF,
-          payload: json.encode({'url': url, 'title': 'Material del curso'}),
-        );
-        notifications++;
-      } else if (prev[key] != newMod) {
-        // Editado/actualizado
-        final parts = key.split('|');
-        final cid = int.tryParse(parts[1]) ?? 0;
         final courseName = nombresPorId[cid] ?? 'Curso';
-        final cmid = int.tryParse(parts[2]) ?? 0;
-        final url = 'https://savio.utb.edu.co/mod/resource/view.php?id=$cmid';
-        await NotificationService.showSimple(
-          title: '[${_shorten(courseName, 32)}] Material actualizado',
-          body: 'Se ha modificado un archivo existente',
-          id: key.hashCode & 0x7FFFFFFF,
-          payload: json.encode({'url': url, 'title': 'Material del curso'}),
-        );
+        final url = 'https://savio.utb.edu.co/mod/$modname/view.php?id=$cmid';
+        nuevos.add({'curso': courseName, 'mod': modname, 'url': url});
+        _notifiedKeys.add(key);
         notifications++;
       }
     }
-    // Eliminados
-    for (final key in prev.keys) {
-      if (notifications >= 5) break;
-      if (!nuevoIndex.containsKey(key)) {
-        final parts = key.split('|');
-        final cid = int.tryParse(parts[1]) ?? 0;
-        final courseName = nombresPorId[cid] ?? 'Curso';
+    // Agrupar notificaciones si hay varias nuevas
+    if (nuevos.isNotEmpty) {
+      if (nuevos.length == 1) {
+        final n = nuevos.first;
+        final tipo = _nombreHumanoModulo(n['mod']!);
         await NotificationService.showSimple(
-          title: '[${_shorten(courseName, 32)}] Material eliminado',
-          body: 'Un archivo ya no está disponible',
-          id: key.hashCode & 0x7FFFFFFF,
+          title: '[${_shorten(n['curso']!, 32)}] Nuevo $tipo',
+          body: 'Se ha agregado un nuevo $tipo',
+          id: ('single|' + n['curso']! + '|' + n['mod']!).hashCode & 0x7FFFFFFF,
+          payload: json.encode({'url': n['url'], 'title': 'Nuevo $tipo'}),
         );
-        notifications++;
+      } else {
+        final cursosSet = nuevos.map((e) => e['curso']).toSet();
+        final resumenCursos = cursosSet.length == 1
+            ? _shorten(cursosSet.first!, 32)
+            : '${cursosSet.length} cursos';
+        await NotificationService.showSimple(
+          title: 'Nuevas actividades',
+          body: '${nuevos.length} elementos en $resumenCursos',
+          id: ('group|' + resumenCursos).hashCode & 0x7FFFFFFF,
+        );
       }
     }
 
     _lastIndex = nuevoIndex;
-    // Persistir el índice para compartir estado con el isolate de background
+    // Persistir el índice y claves notificadas para compartir estado con el isolate de background
     try {
       await _savePersistedIndex(_lastIndex);
+    } catch (_) {}
+    try {
+      await _savePersistedNotified(_notifiedKeys);
     } catch (_) {}
 
     try {
@@ -197,6 +195,7 @@ class FileChangeService {
   }
 
   static const String _prefsKey = 'file_change_index_v1';
+  static const String _prefsNotifiedKey = 'file_change_notified_keys_v1';
 
   static Future<void> _savePersistedIndex(Map<String, int> idx) async {
     try {
@@ -212,6 +211,26 @@ class FileChangeService {
       if (s != null && s.isNotEmpty) {
         final m = json.decode(s) as Map<String, dynamic>;
         _lastIndex = m.map((k, v) => MapEntry(k, (v is num) ? v.toInt() : int.tryParse('$v') ?? 0));
+      }
+    } catch (_) {}
+  }
+
+  static Future<void> _savePersistedNotified(Set<String> keys) async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_prefsNotifiedKey, json.encode(keys.toList()));
+    } catch (_) {}
+  }
+
+  static Future<void> _loadPersistedNotified() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final s = sp.getString(_prefsNotifiedKey);
+      if (s != null && s.isNotEmpty) {
+        final list = json.decode(s);
+        if (list is List) {
+          _notifiedKeys.addAll(list.whereType<String>());
+        }
       }
     } catch (_) {}
   }
@@ -245,5 +264,20 @@ class FileChangeService {
   static String _shorten(String s, int max) {
     if (s.length <= max) return s;
     return '${s.substring(0, max - 1)}…';
+  }
+
+  static String _nombreHumanoModulo(String mod) {
+    switch (mod) {
+      case 'assign':
+        return 'tarea';
+      case 'forum':
+        return 'foro';
+      case 'quiz':
+        return 'quiz';
+      case 'resource':
+        return 'recurso';
+      default:
+        return 'actividad';
+    }
   }
 }
