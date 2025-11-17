@@ -12,6 +12,7 @@ import 'moodle_token_service.dart';
 import 'savio_webview_page.dart';
 import 'notification_service.dart';
 import 'course_filters.dart';
+import 'cache_service.dart';
 
 // Urgency helper for badges and sorting
 class _Urgency {
@@ -207,78 +208,122 @@ class _CalendarioPageState extends State<CalendarioPage> {
 
   // Carga actividades completas (sin tocar estado), con token refresh y lote
   Future<List<Map<String, dynamic>>> _cargarActividadesLista() async {
-    // Obtener token real de Moodle si es necesario
-    String? token = UserSession.accessToken;
-    final cookie = UserSession.moodleCookie;
-    Future<String?> refreshToken() async {
-      if (cookie == null) throw 'No hay cookie de sesión.';
-      final t = await fetchMoodleMobileToken(cookie);
-      if (t == null) throw 'No se pudo obtener el token de Moodle.';
-      UserSession.accessToken = t;
-      return t;
-    }
-    if (token == null || token == 'webview-session') {
-      token = await refreshToken();
-    }
-    final url = 'https://savio.utb.edu.co/webservice/rest/server.php';
-    // 1) site info -> userid
-    final siteInfoUrl = '$url?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
-  final responseSiteInfo = await _client.get(Uri.parse(siteInfoUrl));
-    if (responseSiteInfo.statusCode != 200) throw 'Error al obtener site info';
-    var decodedSite = json.decode(responseSiteInfo.body);
-    if (decodedSite is Map && (decodedSite.containsKey('exception') || decodedSite.containsKey('error'))) {
-      token = await refreshToken();
-      final retrySiteInfoUrl = '$url?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
-  final retrySiteInfo = await _client.get(Uri.parse(retrySiteInfoUrl));
-      if (retrySiteInfo.statusCode != 200) throw 'Error al obtener site info';
-      decodedSite = json.decode(retrySiteInfo.body);
-      if (decodedSite is Map && (decodedSite.containsKey('exception') || decodedSite.containsKey('error'))) {
-        throw 'Error de Moodle: ${decodedSite['message'] ?? decodedSite['error'] ?? decodedSite.toString()}';
+    try {
+      // Obtener token real de Moodle si es necesario
+      String? token = UserSession.accessToken;
+      final cookie = UserSession.moodleCookie;
+      Future<String?> refreshToken() async {
+        if (cookie == null) throw 'No hay cookie de sesión.';
+        final t = await fetchMoodleMobileToken(cookie);
+        if (t == null) throw 'No se pudo obtener el token de Moodle.';
+        UserSession.accessToken = t;
+        try {
+          final sp = await SharedPreferences.getInstance();
+          await sp.setString('accessToken', t);
+        } catch (_) {}
+        return t;
       }
-    }
-    if (decodedSite['userid'] == null) throw 'No se pudo determinar el usuario.';
-    final int userId = (decodedSite['userid'] as num).toInt();
-
-    // 2) cursos por userid
-    final cursosUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
-  var responseCursos = await _client.get(Uri.parse(cursosUrl));
-    if (responseCursos.statusCode == 200) {
-      final dc = json.decode(responseCursos.body);
-      if (dc is Map && (dc.containsKey('exception') || dc.containsKey('error'))) {
-        if ((dc['error'] ?? '').toString().contains('invalidtoken') || (dc['message'] ?? '').toString().contains('token')) {
-          token = await refreshToken();
-          final retryUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
-          responseCursos = await _client.get(Uri.parse(retryUrl));
+      if (token == null || token == 'webview-session') {
+        token = await refreshToken();
+      }
+      final url = 'https://savio.utb.edu.co/webservice/rest/server.php';
+      // 1) site info -> userid
+      final siteInfoUrl = '$url?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
+      final responseSiteInfo = await _client.get(Uri.parse(siteInfoUrl));
+      if (responseSiteInfo.statusCode != 200) throw 'Error al obtener site info';
+      var decodedSite = json.decode(responseSiteInfo.body);
+      if (decodedSite is Map && (decodedSite.containsKey('exception') || decodedSite.containsKey('error'))) {
+        token = await refreshToken();
+        final retrySiteInfoUrl = '$url?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
+        final retrySiteInfo = await _client.get(Uri.parse(retrySiteInfoUrl));
+        if (retrySiteInfo.statusCode != 200) throw 'Error al obtener site info';
+        decodedSite = json.decode(retrySiteInfo.body);
+        if (decodedSite is Map && (decodedSite.containsKey('exception') || decodedSite.containsKey('error'))) {
+          throw 'Error de Moodle: ${decodedSite['message'] ?? decodedSite['error'] ?? decodedSite.toString()}';
         }
       }
-    }
-    if (responseCursos.statusCode != 200) throw 'Error al obtener cursos';
-    final decodedCursos = json.decode(responseCursos.body);
-    if (decodedCursos is Map && (decodedCursos.containsKey('exception') || decodedCursos.containsKey('error'))) {
-      throw 'Error de Moodle: ${decodedCursos['message'] ?? decodedCursos['error'] ?? decodedCursos.toString()}';
-    }
-  List cursos;
-    if (decodedCursos is List) {
-      cursos = decodedCursos;
-    } else if (decodedCursos is Map && decodedCursos.containsKey('courses')) {
-      cursos = decodedCursos['courses'] as List;
-    } else {
-      throw 'Respuesta inesperada al obtener cursos: ${decodedCursos.toString()}';
-    }
-    // Filtrar a cursos vigentes del semestre actual (heurística por fechas/estado)
-  // Nota: filtrado ahora usa CourseFilters y no requiere nowSec local
-    final cursosVigentes = cursos.whereType<Map>().where((c) => CourseFilters.isCurrentCourse(c)).toList();
+      if (decodedSite['userid'] == null) throw 'No se pudo determinar el usuario.';
+      final int userId = (decodedSite['userid'] as num).toInt();
 
-    // Lote de eventos solo de cursos vigentes
-    final ids = <int>[];
-    final nombresPorId = <int, String>{};
-    for (var curso in cursosVigentes) {
-      final cid = (curso['id'] as num).toInt();
-      ids.add(cid);
-      nombresPorId[cid] = (curso['fullname'] ?? '').toString();
+      // 2) cursos por userid
+      final cursosUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
+      var responseCursos = await _client.get(Uri.parse(cursosUrl));
+      if (responseCursos.statusCode == 200) {
+        final dc = json.decode(responseCursos.body);
+        if (dc is Map && (dc.containsKey('exception') || dc.containsKey('error'))) {
+          if ((dc['error'] ?? '').toString().contains('invalidtoken') || (dc['message'] ?? '').toString().contains('token')) {
+            token = await refreshToken();
+            final retryUrl = '$url?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
+            responseCursos = await _client.get(Uri.parse(retryUrl));
+          }
+        }
+      }
+      if (responseCursos.statusCode != 200) throw 'Error al obtener cursos';
+      final decodedCursos = json.decode(responseCursos.body);
+      if (decodedCursos is Map && (decodedCursos.containsKey('exception') || decodedCursos.containsKey('error'))) {
+        throw 'Error de Moodle: ${decodedCursos['message'] ?? decodedCursos['error'] ?? decodedCursos.toString()}';
+      }
+      List cursos;
+      if (decodedCursos is List) {
+        cursos = decodedCursos;
+      } else if (decodedCursos is Map && decodedCursos.containsKey('courses')) {
+        cursos = decodedCursos['courses'] as List;
+      } else {
+        throw 'Respuesta inesperada al obtener cursos: ${decodedCursos.toString()}';
+      }
+      final cursosVigentes = cursos.whereType<Map>().where((c) => CourseFilters.isCurrentCourse(c)).toList();
+      final ids = <int>[];
+      final nombresPorId = <int, String>{};
+      for (var curso in cursosVigentes) {
+        final cid = (curso['id'] as num).toInt();
+        ids.add(cid);
+        nombresPorId[cid] = (curso['fullname'] ?? '').toString();
+      }
+      final actividades = await _fetchActividadesPorLotes(token!, ids, nombresPorId);
+      // Guardar caché serializando fechas (ms)
+      try {
+        final serializable = actividades
+            .map((a) => {
+                  'curso': a['curso'],
+                  'nombre': a['nombre'],
+                  'fechaInicioMs': (a['fechaInicio'] is DateTime) ? (a['fechaInicio'] as DateTime).millisecondsSinceEpoch : null,
+                  'fechaCierreMs': (a['fechaCierre'] is DateTime) ? (a['fechaCierre'] as DateTime).millisecondsSinceEpoch : null,
+                  'tipo': a['tipo'],
+                  'courseid': a['courseid'],
+                  'cmid': a['cmid'],
+                  'instance': a['instance'],
+                  'url': a['url'],
+                })
+            .toList();
+        await CacheService.setJson('cache_calendar_acts_v1', serializable);
+      } catch (_) {}
+      return actividades;
+    } catch (e) {
+      // Fallback: intentar cargar de caché
+      final cached = await CacheService.getJsonStale('cache_calendar_acts_v1');
+      if (cached is List) {
+        final out = <Map<String, dynamic>>[];
+        for (final m in cached.whereType<Map>()) {
+          out.add({
+            'curso': m['curso'],
+            'nombre': m['nombre'],
+            'fechaInicio': (m['fechaInicioMs'] is num)
+                ? DateTime.fromMillisecondsSinceEpoch((m['fechaInicioMs'] as num).toInt())
+                : DateTime.now(),
+            'fechaCierre': (m['fechaCierreMs'] is num)
+                ? DateTime.fromMillisecondsSinceEpoch((m['fechaCierreMs'] as num).toInt())
+                : null,
+            'tipo': m['tipo'],
+            'courseid': m['courseid'],
+            'cmid': m['cmid'],
+            'instance': m['instance'],
+            'url': m['url'],
+          });
+        }
+        return out;
+      }
+      rethrow;
     }
-    final actividades = await _fetchActividadesPorLotes(token!, ids, nombresPorId);
-    return actividades;
   }
 
   Map<String, int> _indexActivities(List<Map<String, dynamic>> acts) {

@@ -15,6 +15,8 @@ class _SavioWebViewPageState extends State<SavioWebViewPage> {
   late final WebViewController _controller;
   bool _canGoBack = false;
   bool _canGoForward = false;
+  bool _hasError = false;
+  String? _errorText;
 
   @override
   void initState() {
@@ -24,8 +26,19 @@ class _SavioWebViewPageState extends State<SavioWebViewPage> {
       ..setBackgroundColor(const Color(0xFFFFFFFF))
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageFinished: (_) => _updateNav(),
+          onPageFinished: (_) {
+            _updateNav();
+            if (_hasError) {
+              setState(() { _hasError = false; _errorText = null; });
+            }
+          },
           onPageStarted: (_) => _updateNav(),
+          onWebResourceError: (err) {
+            setState(() {
+              _hasError = true;
+              _errorText = 'No se pudo cargar la página (código ${err.errorCode}).';
+            });
+          },
         ),
       )
       ..loadRequest(Uri.parse(widget.initialUrl ?? 'https://savio.utb.edu.co/my'));
@@ -70,7 +83,34 @@ class _SavioWebViewPageState extends State<SavioWebViewPage> {
           ),
         ],
       ),
-      body: WebViewWidget(controller: _controller),
+      body: Stack(
+        children: [
+          WebViewWidget(controller: _controller),
+          if (_hasError)
+            Container(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              alignment: Alignment.center,
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.cloud_off, size: 48),
+                  const SizedBox(height: 12),
+                  Text(_errorText ?? 'Sin conexión. Intenta de nuevo.'),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: () {
+                      setState(() { _hasError = false; _errorText = null; });
+                      _controller.reload();
+                    },
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Reintentar'),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

@@ -5,6 +5,7 @@ import 'package:html/dom.dart';
 import 'dart:io';
 import 'package:http/io_client.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 Future<String?> fetchMoodleMobileToken(String cookie) async {
   final url = Uri.parse('https://savio.utb.edu.co/user/managetoken.php');
@@ -34,7 +35,13 @@ Future<String?> fetchMoodleMobileToken(String cookie) async {
     for (var row in rows) {
       final cells = row.querySelectorAll('td');
       if (cells.length > 1 && cells[1].text.trim() == 'Moodle mobile web service') {
-        return cells[0].text.trim(); // El token está en la primera celda
+        final token = cells[0].text.trim();
+        // Persistir para uso offline posterior
+        try {
+          final sp = await SharedPreferences.getInstance();
+          await sp.setString('accessToken', token);
+        } catch (_) {}
+        return token; // El token está en la primera celda
       }
     }
   }

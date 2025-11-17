@@ -95,6 +95,10 @@ void main() async {
     } else {
       appThemeMode.value = ThemeMode.system;
     }
+    // Cargar credenciales de sesión previamente guardadas (para modo offline)
+    UserSession.moodleCookie = sp.getString('moodleCookie');
+    UserSession.accessToken = sp.getString('accessToken');
+    UserSession.displayName = sp.getString('displayName');
   } catch (_) {}
 
   runApp(const SavioApp());
@@ -255,6 +259,8 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
   @override
   void initState() {
     super.initState();
+    // Si no hay internet pero ya hay sesión previa cacheada, saltar al menú.
+    _maybeSkipOffline();
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFFFFFFFF))
@@ -304,6 +310,31 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
     // Intento de limpieza de sesión por JS (opcional)
     // Nota: para una limpieza real de cookies fuera del contexto de la página
     // se requiere un plugin específico o reiniciar la app.
+  }
+
+  Future<void> _maybeSkipOffline() async {
+    // Comprobar conectividad de forma rápida (socket a DNS público)
+    final online = await _hasInternet();
+    final hasSession = (UserSession.moodleCookie != null && UserSession.moodleCookie!.isNotEmpty) ||
+        (UserSession.accessToken != null && UserSession.accessToken != 'webview-session' && UserSession.accessToken!.isNotEmpty);
+    if (!online && hasSession && mounted) {
+      // Ir directamente al menú: funcionalidades usarán caché si es necesario
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const MenuPage()),
+        );
+      });
+    }
+  }
+
+  Future<bool> _hasInternet() async {
+    try {
+      final socket = await io.Socket.connect('1.1.1.1', 53, timeout: const Duration(seconds: 2));
+      socket.destroy();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   bool _isMicrosoftUrl(String? url) {
@@ -419,6 +450,18 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
       try {
         final sp = await SharedPreferences.getInstance();
         if (cookie != null) await sp.setString('moodleCookie', cookie);
+        // Obtener y guardar el token inmediatamente tras login para uso offline
+        if (cookie != null && cookie.isNotEmpty) {
+          try {
+            final token = await fetchMoodleMobileToken(cookie).timeout(const Duration(seconds: 8));
+            if (token != null && token.isNotEmpty) {
+              UserSession.accessToken = token;
+              await sp.setString('accessToken', token);
+            }
+          } catch (_) {
+            // Si falla ahora, otras pantallas reintentan cuando haya red
+          }
+        }
       } catch (_) {}
       setState(() {
         _ready = true;
@@ -428,10 +471,13 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
       try {
         await _controller.loadRequest(Uri.parse('about:blank'));
       } catch (_) {}
-      UserSession.accessToken = 'webview-session';
+      // Si no se pudo obtener token todavía, deja marcador mínimo para no romper flujos
+      UserSession.accessToken = UserSession.accessToken ?? 'webview-session';
       try {
         final sp = await SharedPreferences.getInstance();
-        await sp.setString('accessToken', UserSession.accessToken!);
+        if (UserSession.accessToken != null) {
+          await sp.setString('accessToken', UserSession.accessToken!);
+        }
       } catch (_) {}
       if (!mounted) return;
       await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -1029,6 +1075,15 @@ Future<String?> _fetchDisplayName() async {
   if (UserSession.displayName != null && UserSession.displayName!.isNotEmpty) {
     return UserSession.displayName;
   }
+  // Intentar caché persistente primero (offline)
+  try {
+    final sp = await SharedPreferences.getInstance();
+    final cached = sp.getString('displayName');
+    if (cached != null && cached.isNotEmpty) {
+      UserSession.displayName = cached;
+      return cached;
+    }
+  } catch (_) {}
   final cookie = UserSession.moodleCookie;
   if (cookie == null || cookie.isEmpty) return null;
   // Obtener token Moodle (mobile) usando el cookie
@@ -1053,11 +1108,21 @@ Future<String?> _fetchDisplayName() async {
       final name = (data['fullname'] as String).trim();
       if (name.isNotEmpty) {
         UserSession.displayName = name;
+        try {
+          final sp = await SharedPreferences.getInstance();
+          await sp.setString('displayName', name);
+        } catch (_) {}
         return name;
       }
     }
     return null;
   } catch (_) {
+    // Fallback a caché persistente si existiera
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final cached = sp.getString('displayName');
+      if (cached != null && cached.isNotEmpty) return cached;
+    } catch (_) {}
     return null;
   }
 }

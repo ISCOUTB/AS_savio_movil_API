@@ -4,9 +4,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'main.dart';
 import 'savio_webview_page.dart';
 import 'moodle_token_service.dart';
+import 'cache_service.dart';
 
 class ActividadesCalificacionesPage extends StatefulWidget {
   const ActividadesCalificacionesPage({super.key});
@@ -74,6 +76,10 @@ class _ActividadesCalificacionesPageState extends State<ActividadesCalificacione
       final t = await fetchMoodleMobileToken(cookie);
       if (t != null) {
         UserSession.accessToken = t;
+        try {
+          final sp = await SharedPreferences.getInstance();
+          await sp.setString('accessToken', t);
+        } catch (_) {}
         token = t;
       }
     }
@@ -83,24 +89,46 @@ class _ActividadesCalificacionesPageState extends State<ActividadesCalificacione
   Future<int> _fetchUserId(String token) async {
     final base = 'https://savio.utb.edu.co/webservice/rest/server.php';
     final q = '$base?wstoken=$token&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json';
-    final r = await _client.get(Uri.parse(q));
-    if (r.statusCode != 200) throw 'Error al obtener site info';
-    final d = json.decode(r.body);
-    if (d is Map && (d['exception'] != null || d['error'] != null)) throw 'Error de Moodle: ${d['error'] ?? d['message'] ?? d.toString()}';
-    return (d['userid'] as num).toInt();
+    // Intentar red primero
+    try {
+      final r = await _client.get(Uri.parse(q));
+      if (r.statusCode != 200) throw 'HTTP ${r.statusCode}';
+      final d = json.decode(r.body);
+      if (d is Map && (d['exception'] != null || d['error'] != null)) throw 'Error de Moodle: ${d['error'] ?? d['message'] ?? d.toString()}';
+      await CacheService.setJson('cache_site_info_$token', d);
+      return (d['userid'] as num).toInt();
+    } catch (_) {
+      // Fallback a caché
+      final cached = await CacheService.getJsonStale('cache_site_info_$token');
+      if (cached is Map && cached['userid'] != null) {
+        return (cached['userid'] as num).toInt();
+      }
+      rethrow;
+    }
   }
 
   Future<List<Map<String, dynamic>>> _fetchCourses(String token, int userId) async {
     final base = 'https://savio.utb.edu.co/webservice/rest/server.php';
     final q = '$base?wstoken=$token&wsfunction=core_enrol_get_users_courses&moodlewsrestformat=json&userid=$userId';
-    final r = await _client.get(Uri.parse(q));
-    if (r.statusCode != 200) throw 'Error al obtener cursos';
-    final d = json.decode(r.body);
-    if (d is Map && (d['exception'] != null || d['error'] != null)) throw 'Error de Moodle: ${d['error'] ?? d['message'] ?? d.toString()}';
-    if (d is List) {
-      return List<Map<String, dynamic>>.from(d.map((e) => Map<String, dynamic>.from(e as Map)));
+    try {
+      final r = await _client.get(Uri.parse(q));
+      if (r.statusCode != 200) throw 'HTTP ${r.statusCode}';
+      final d = json.decode(r.body);
+      if (d is Map && (d['exception'] != null || d['error'] != null)) throw 'Error de Moodle: ${d['error'] ?? d['message'] ?? d.toString()}';
+      if (d is List) {
+        await CacheService.setJson('cache_courses_user_$userId', d);
+        return List<Map<String, dynamic>>.from(d.map((e) => Map<String, dynamic>.from(e as Map)));
+      }
+      return [];
+    } catch (_) {
+      final cached = await CacheService.getJsonStale('cache_courses_user_$userId');
+      if (cached is List) {
+        return List<Map<String, dynamic>>.from(
+          cached.whereType<Map>().map((e) => Map<String, dynamic>.from(e)),
+        );
+      }
+      rethrow;
     }
-    return [];
   }
 
   Future<List<Map<String, dynamic>>> _fetchActivitiesForCourse(String token, int courseId) async {
@@ -215,6 +243,51 @@ class _ActividadesCalificacionesPageState extends State<ActividadesCalificacione
       if (db == null) return -1;
       return da.compareTo(db);
     });
+    // Si no obtuvimos nada (posible offline), intentar caché persistida
+    if (out.isEmpty) {
+      try {
+        final cached = await CacheService.getJsonStale('cache_course_acts_$courseId');
+        if (cached is List) {
+          for (final e in cached.whereType<Map>()) {
+            out.add({
+              'tipo': e['tipo'],
+              'name': e['name'],
+              'duedate': (e['duedateMs'] is num)
+                  ? DateTime.fromMillisecondsSinceEpoch((e['duedateMs'] as num).toInt())
+                  : null,
+              'gradeDisplay': e['gradeDisplay'],
+              'gradeRaw': e['gradeRaw'],
+              'id': e['id'],
+              'cmid': e['cmid'],
+            });
+          }
+          // Mantener orden
+          out.sort((a, b) {
+            final da = a['duedate'] as DateTime?;
+            final db = b['duedate'] as DateTime?;
+            if (da == null && db == null) return 0;
+            if (da == null) return 1;
+            if (db == null) return -1;
+            return da.compareTo(db);
+          });
+        }
+      } catch (_) {}
+    }
+    // Guardar en caché (fechas como milisegundos)
+    try {
+      final serializable = out
+          .map((m) => {
+                'tipo': m['tipo'],
+                'name': m['name'],
+                'duedateMs': (m['duedate'] is DateTime) ? (m['duedate'] as DateTime).millisecondsSinceEpoch : null,
+                'gradeDisplay': m['gradeDisplay'],
+                'gradeRaw': m['gradeRaw'],
+                'id': m['id'],
+                'cmid': m['cmid'],
+              })
+          .toList();
+      await CacheService.setJson('cache_course_acts_$courseId', serializable);
+    } catch (_) {}
     return out;
   }
 
@@ -311,10 +384,22 @@ class _ActividadesCalificacionesPageState extends State<ActividadesCalificacione
       if (maxGrade == 0) maxGrade = 100.0;
       final scaled = (obtained / maxGrade) * 5.0;
       final display = '${scaled.clamp(0, 5).toStringAsFixed(2)}/5';
-      return {'display': display, 'raw': obtained.toStringAsFixed(2)};
+      final res = {'display': display, 'raw': obtained.toStringAsFixed(2)};
+      // cachear
+      try { await CacheService.setJson('cache_grade_assign_$assignId', res); } catch (_) {}
+      return res;
     } catch (e, st) {
       debugPrint('fetchAssignmentGradeInfo error: $e');
       debugPrint('$st');
+      // Fallback a caché
+      try {
+        final cached = await CacheService.getJsonStale('cache_grade_assign_$assignId');
+        if (cached is Map) {
+          final disp = cached['display']?.toString();
+          final raw = cached['raw']?.toString();
+          if (disp != null && raw != null) return {'display': disp, 'raw': raw};
+        }
+      } catch (_) {}
     }
     return null;
   }
@@ -343,10 +428,21 @@ class _ActividadesCalificacionesPageState extends State<ActividadesCalificacione
       final maxGrade = (maxQuiz != null && maxQuiz > 0) ? maxQuiz : 100.0;
       final scaled = (obtained / maxGrade) * 5.0;
       final display = '${scaled.clamp(0, 5).toStringAsFixed(2)}/5';
-      return {'display': display, 'raw': obtained.toStringAsFixed(2)};
+      final res = {'display': display, 'raw': obtained.toStringAsFixed(2)};
+      try { await CacheService.setJson('cache_grade_quiz_$quizId', res); } catch (_) {}
+      return res;
     } catch (e, st) {
       debugPrint('fetchQuizGradeInfo error: $e');
       debugPrint('$st');
+      // Fallback a caché
+      try {
+        final cached = await CacheService.getJsonStale('cache_grade_quiz_$quizId');
+        if (cached is Map) {
+          final disp = cached['display']?.toString();
+          final raw = cached['raw']?.toString();
+          if (disp != null && raw != null) return {'display': disp, 'raw': raw};
+        }
+      } catch (_) {}
     }
     return null;
   }

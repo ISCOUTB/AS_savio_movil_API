@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 
 import 'main.dart';
 import 'moodle_token_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io' as io;
 
 
 class MostrarTokenScreen extends StatefulWidget {
@@ -27,25 +29,81 @@ class _MostrarTokenScreenState extends State<MostrarTokenScreen> {
   Future<void> _getToken() async {
     setState(() => _loading = true);
     try {
-      final token = await fetchMoodleMobileToken(widget.cookie ?? '');
-      if (token != null) {
+      final online = await _hasInternet();
+      if (online) {
+        final token = await fetchMoodleMobileToken(widget.cookie ?? '');
+        if (token != null && token.isNotEmpty) {
+          setState(() {
+            _token = token;
+            _loading = false;
+            _error = null;
+          });
+          // Guardar el token globalmente para toda la app
+          UserSession.accessToken = token;
+          return;
+        }
+      }
+      // Si no hay internet o no se pudo obtener, intentar caché persistente
+      final cached = await _getCachedToken();
+      if (cached != null && cached.isNotEmpty) {
         setState(() {
-          _token = token;
+          _token = cached;
           _loading = false;
+          _error = null;
         });
-        // Guardar el token globalmente para toda la app
-        UserSession.accessToken = token;
+        // Aviso opcional si estamos offline
+        if (mounted && !(online)) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Sin conexión: mostrando token guardado')),
+          );
+        }
+        return;
+      }
+      // Si tampoco hay caché, mostrar error claro
+      setState(() {
+        _error = online
+            ? 'No se pudo obtener el token.'
+            : 'Sin conexión y sin token guardado.';
+        _loading = false;
+      });
+    } catch (e) {
+      // Fallback a caché ante cualquier excepción
+      final cached = await _getCachedToken();
+      if (cached != null && cached.isNotEmpty) {
+        setState(() {
+          _token = cached;
+          _loading = false;
+          _error = null;
+        });
       } else {
         setState(() {
-          _error = 'No se pudo encontrar el token.';
+          _error = 'Error: ${e.toString()}';
           _loading = false;
         });
       }
-    } catch (e) {
-      setState(() {
-        _error = 'Error: ${e.toString()}';
-        _loading = false;
-      });
+    }
+  }
+
+  Future<String?> _getCachedToken() async {
+    try {
+      // Priorizar el valor en memoria si existe
+      if (UserSession.accessToken != null && UserSession.accessToken!.isNotEmpty) {
+        return UserSession.accessToken;
+      }
+      final sp = await SharedPreferences.getInstance();
+      return sp.getString('accessToken');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> _hasInternet() async {
+    try {
+      final socket = await io.Socket.connect('1.1.1.1', 53, timeout: const Duration(seconds: 2));
+      socket.destroy();
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
